@@ -1,0 +1,25 @@
+# Real AWG client config with keys — never commit.
+configs/amneziawg_awg0
+configs/amneziawg_awg0.conf
+*.awg.conf
+awg*.conf
+
+# Real UCI exports may contain PrivateKey / PresharedKey — keep only .example.
+configs/network.local
+configs/*.local
+
+# Downloaded firmware images and packages.
+*.img
+*.img.gz
+*.ipk
+*.apk
+sha256sums
+sha256sums.asc
+sha256sums.sig
+
+# Editor / OS junk.
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/

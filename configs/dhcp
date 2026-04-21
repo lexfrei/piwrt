@@ -1,0 +1,57 @@
+# /etc/config/dhcp
+#
+# DHCP option 26 announces MTU 1280 to LAN clients, matching the AWG
+# tunnel MTU. This avoids fragmentation failures (classic Nintendo Switch
+# 2124-8006) without touching the br-lan MTU itself.
+#
+# Upstream DNS notes:
+#  - If you run https-dns-proxy, it auto-rewrites this dnsmasq config to
+#    use 127.0.0.1:5053 (Cloudflare DoH) + a backup upstream. Leave
+#    noresolv=1, don't hand-edit `list server` here — the proxy owns it.
+#  - If you want plain DNS over the tunnel instead of DoH (simpler, less
+#    moving parts), remove https-dns-proxy and set:
+#      option noresolv '1'
+#      list server '<VPN_DNS_IP_FROM_YOUR_AWG_CONF>'
+#  - Never point at an upstream that isn't reachable through the tunnel —
+#    otherwise DNS leaks outside the kill switch.
+
+config dnsmasq
+    option domainneeded '1'
+    option localise_queries '1'
+    option rebind_protection '1'
+    option rebind_localhost '1'
+    option local '/lan/'
+    option domain 'lan'
+    option expandhosts '1'
+    option cachesize '1000'
+    option authoritative '1'
+    option readethers '1'
+    option leasefile '/tmp/dhcp.leases'
+    option resolvfile '/tmp/resolv.conf.d/resolv.conf.auto'
+    option localservice '1'
+    option ednspacket_max '1232'
+    option noresolv '1'
+    # list server '<VPN_DNS_IP>'   # only if NOT using https-dns-proxy
+
+config dhcp 'lan'
+    option interface 'lan'
+    option start '100'
+    option limit '150'
+    option leasetime '12h'
+    option dhcpv4 'server'
+    option dhcpv6 'server'
+    option ra 'server'
+    list ra_flags 'managed-config'
+    list ra_flags 'other-config'
+    # MTU announcement to clients (matches AWG tunnel MTU)
+    list dhcp_option '26,1280'
+
+config dhcp 'wan'
+    option interface 'wan'
+    option ignore '1'
+
+config odhcpd 'odhcpd'
+    option maindhcp '0'
+    option leasefile '/tmp/hosts/odhcpd'
+    option leasetrigger '/usr/sbin/odhcpd-update'
+    option loglevel '4'

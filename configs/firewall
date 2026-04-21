@@ -1,0 +1,74 @@
+# /etc/config/firewall — full-tunnel + kill switch.
+#
+# No forwarding from lan to wan exists, so if awg0 is down, clients can't
+# leak through the upstream link.
+#
+# SSH-WAN rule allows administering the router from the upstream LAN. Keep
+# permanently if the upstream LAN is trusted (behind your own router);
+# remove after initial setup otherwise.
+
+config defaults
+    option input 'REJECT'
+    option output 'ACCEPT'
+    option forward 'REJECT'
+    option synflood_protect '1'
+
+config zone
+    option name 'lan'
+    list network 'lan'
+    option input 'ACCEPT'
+    option output 'ACCEPT'
+    option forward 'REJECT'
+
+config zone
+    option name 'wan'
+    list network 'wan'
+    list network 'wan6'
+    option input 'REJECT'
+    option output 'ACCEPT'
+    option forward 'REJECT'
+    option masq '1'
+    option mtu_fix '1'
+
+config zone
+    option name 'awg'
+    list network 'awg0'
+    option input 'REJECT'
+    option output 'ACCEPT'
+    option forward 'REJECT'
+    option masq '1'
+    option mtu_fix '1'
+
+# Only allow forwarding from LAN into the tunnel. This is the kill switch:
+# without a lan -> wan rule, clients cannot leak through the upstream link
+# if awg0 is down.
+config forwarding
+    option src 'lan'
+    option dest 'awg'
+
+config rule
+    option name 'Allow-DHCP'
+    option src 'lan'
+    option proto 'udp'
+    option dest_port '67-68'
+    option target 'ACCEPT'
+
+config rule
+    option name 'Allow-DNS'
+    option src 'lan'
+    option proto 'tcp udp'
+    option dest_port '53'
+    option target 'ACCEPT'
+
+config rule
+    option name 'Allow-Ping-LAN'
+    option src 'lan'
+    option proto 'icmp'
+    option target 'ACCEPT'
+
+config rule
+    option name 'SSH-WAN'
+    option src 'wan'
+    option proto 'tcp'
+    option dest_port '22'
+    option target 'ACCEPT'

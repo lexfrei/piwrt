@@ -1,0 +1,34 @@
+# Example /etc/config/wireless for RPi5 built-in BCM43455.
+#
+# Two mandatory quirks on this chip:
+#   1. brcmfmac does not support ACS (Automatic Channel Selection) — the
+#      channel must be a concrete number, never 'auto'. Otherwise hostapd
+#      bails out with "ACS: Unable to collect survey data".
+#   2. 2.4 GHz AP mode can lock into RX-deaf state after a few wifi
+#      down/up cycles on some RPi5 units (TX beacon goes out, RX counter
+#      stays at 0, no STA auth events ever reach hostapd). 5 GHz AP mode
+#      on the same chip keeps working. Use 5 GHz.
+#
+# Also: SSID must be plain ASCII. Do NOT use '@' or '.' — OpenWrt's hostapd
+# has utf8_ssid=1 by default and encodes such SSIDs as ssid2="..." (hex-
+# quoted). macOS and Nintendo Switch silently refuse to associate with an
+# ssid2= network, beacons look fine, association never starts.
+
+config wifi-device 'radio0'
+    option type 'mac80211'
+    option path 'platform/axi/1001100000.mmc/mmc_host/mmc1/mmc1:0001/mmc1:0001:1'
+    option band '5g'
+    option channel '36'
+    option htmode 'HT20'
+    option country 'RU'
+    option legacy_rates '1'
+    option disabled '0'
+
+config wifi-iface 'default_radio0'
+    option device 'radio0'
+    option network 'lan'
+    option mode 'ap'
+    option ssid '<ASCII_SSID_NO_AT_OR_DOT>'
+    option hidden '0'
+    option encryption 'psk2'
+    option key '<WIFI_PASSWORD_MIN_8_CHARS>'
