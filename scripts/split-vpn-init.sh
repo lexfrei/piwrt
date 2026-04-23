@@ -1,48 +1,87 @@
 #!/bin/sh
 # /etc/hotplug.d/iface/90-split-vpn
 #
-# On wan up: install the ip rule / ip route that carries fwmark-0x100
-# traffic (matched by 50-allow-domains.nft) out via eth0 instead of
-# the default awg0 tunnel.
+# Maintains split-VPN routing across any uplink listed in WAN_IFACES
+# (default eth-backed `wan` and USB-backed `wwan`). On ifup/ifdown of
+# any member, picks the active uplink with the lowest metric, rebuilds
+# table 100 to go through it, and pins the Russian DNS resolver
+# (77.88.8.8) to the same uplink so it never leaks through awg0.
 #
-# Also pin the Russian DNS resolver (77.88.8.8) to eth0 so that
-# `server=/domain/77.88.8.8` directives from allow-domains.conf do
-# not accidentally tunnel through awg0.
+# To add a new uplink (say a 4G dongle as `wwan2`): add it to
+# WAN_IFACES below, put it into firewall zone `wan`, and set a higher
+# `option metric` than the primary uplink so failover picks it last.
 
+WAN_IFACES='wan wwan'
 TABLE_ID=100
 FWMARK='0x100'
 RULE_PREF=100
 RU_RESOLVER='77.88.8.8'
 
-if [ "$INTERFACE" != 'wan' ]; then
-    exit 0
-fi
+# Quick exit if this hotplug event isn't for one of our WAN members.
+in_wan_group=0
+for i in $WAN_IFACES; do
+    [ "$INTERFACE" = "$i" ] && in_wan_group=1 && break
+done
+[ "$in_wan_group" = '1' ] || exit 0
+
+# Returns "<gateway> <device>" for the lowest-metric up WAN, or empty.
+pick_primary_wan() {
+    best_metric=999999
+    best_gw=''
+    best_dev=''
+    for iface in $WAN_IFACES; do
+        status=$(ifstatus "$iface" 2>/dev/null)
+        [ -z "$status" ] && continue
+        [ "$(echo "$status" | jsonfilter -e '@.up' 2>/dev/null)" = 'true' ] || continue
+        metric=$(echo "$status" | jsonfilter -e '@.metric' 2>/dev/null)
+        [ -z "$metric" ] && metric=0
+        gw=$(echo "$status" | jsonfilter -e '@.route[0].nexthop' 2>/dev/null)
+        dev=$(echo "$status" | jsonfilter -e '@.l3_device' 2>/dev/null)
+        [ -n "$gw" ] && [ -n "$dev" ] || continue
+        if [ "$metric" -lt "$best_metric" ]; then
+            best_metric=$metric
+            best_gw=$gw
+            best_dev=$dev
+        fi
+    done
+    [ -n "$best_gw" ] && echo "$best_gw $best_dev"
+}
+
+apply_routes() {
+    gw="$1"
+    dev="$2"
+    ip rule del fwmark "$FWMARK" lookup "$TABLE_ID" 2>/dev/null
+    ip rule add fwmark "$FWMARK" lookup "$TABLE_ID" pref "$RULE_PREF"
+    ip route flush table "$TABLE_ID" 2>/dev/null
+    ip route add default via "$gw" dev "$dev" table "$TABLE_ID"
+    ip route replace "$RU_RESOLVER/32" via "$gw" dev "$dev"
+    logger -t split-vpn "$ACTION $INTERFACE: primary WAN = $dev ($gw); table $TABLE_ID + $RU_RESOLVER pinned"
+}
+
+clear_routes() {
+    ip route flush table "$TABLE_ID" 2>/dev/null
+    ip route del "$RU_RESOLVER/32" 2>/dev/null
+    logger -t split-vpn "$ACTION $INTERFACE: no active WAN; table $TABLE_ID + $RU_RESOLVER cleared"
+}
 
 case "$ACTION" in
-    ifup)
-        WAN_GW=$(ip -4 route show dev eth0 | awk '/^default/ {print $3; exit} /proto dhcp/ {print $3; exit}')
-        if [ -z "$WAN_GW" ]; then
-            # netifd stores the router hop separately during dhcp
-            WAN_GW=$(ifstatus wan 2>/dev/null | awk -F'"' '/"nexthop":/ {print $4; exit}')
+    ifup|ifupdate)
+        sleep 2   # wait for netifd to install routes
+        set -- $(pick_primary_wan)
+        if [ -n "$1" ] && [ -n "$2" ]; then
+            apply_routes "$1" "$2"
+        else
+            clear_routes
         fi
-        if [ -z "$WAN_GW" ]; then
-            logger -t split-vpn "ifup wan: cannot determine WAN gateway, skipping"
-            exit 0
-        fi
-
-        ip rule del fwmark "$FWMARK" lookup "$TABLE_ID" 2>/dev/null
-        ip rule add fwmark "$FWMARK" lookup "$TABLE_ID" pref "$RULE_PREF"
-
-        ip route flush table "$TABLE_ID" 2>/dev/null
-        ip route add default via "$WAN_GW" dev eth0 table "$TABLE_ID"
-        ip route replace "$RU_RESOLVER/32" via "$WAN_GW" dev eth0
-
-        logger -t split-vpn "ifup wan: fwmark $FWMARK → table $TABLE_ID via $WAN_GW dev eth0"
         ;;
     ifdown)
-        ip rule del fwmark "$FWMARK" lookup "$TABLE_ID" 2>/dev/null
-        ip route flush table "$TABLE_ID" 2>/dev/null
-        ip route del "$RU_RESOLVER/32" 2>/dev/null
-        logger -t split-vpn "ifdown wan: split-VPN routes cleared"
+        sleep 1
+        set -- $(pick_primary_wan)
+        if [ -n "$1" ] && [ -n "$2" ]; then
+            # Another WAN still up — switch to it
+            apply_routes "$1" "$2"
+        else
+            clear_routes
+        fi
         ;;
 esac

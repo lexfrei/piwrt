@@ -37,10 +37,22 @@ config interface 'lan'
 config interface 'wan'
     option device 'eth0'
     option proto 'dhcp'
+    # metric is used by split-vpn-init.sh to pick the primary uplink
+    # when multiple WAN-family interfaces are up. Lower wins.
+    option metric '10'
 
 config interface 'wan6'
     option device 'eth0'
     option proto 'dhcpv6'
+    option metric '10'
+
+# Optional: USB Wi-Fi dongle (mt76) in STA mode as LTE/hotspot fallback.
+# Uncomment once the radio is wired up in /etc/config/wireless and added
+# to firewall zone `wan` (see configs/firewall).
+#
+# config interface 'wwan'
+#     option proto 'dhcp'
+#     option metric '20'
 
 config interface 'awg0'
     option proto 'amneziawg'

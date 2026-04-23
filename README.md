@@ -357,6 +357,15 @@ ssh root@pi5 ifup awg0
 - CDN-IP collisions: if a Russian site shares a Cloudflare edge IP with a VPN-only site, the bypass will also let the other site out. Mitigated by 1 h dynamic timeout on the sets.
 - When the VPN is down, bypassed domains keep working through the real WAN — this is by design, but worth knowing: the kill switch is only for non-bypassed traffic.
 
+### Dual-WAN ready
+
+`scripts/split-vpn-init.sh` watches every interface listed in its `WAN_IFACES` variable (default: `wan wwan`). On any `ifup`/`ifdown` it picks the lowest-metric live uplink and rebuilds routing table 100 + the `77.88.8.8` pinned route through it. So when you later add a USB Wi-Fi dongle for travel:
+
+1. Wire the radio as `wifi-iface mode sta` pointing at `network 'wwan'` in `/etc/config/wireless`.
+2. Uncomment the `config interface 'wwan'` block in `/etc/config/network` (metric `20` keeps ethernet as primary; USB takes over when ethernet is down).
+3. Add `wwan` to the `wan` firewall zone: `uci add_list firewall.@zone[1].network='wwan'`, commit, `fw4 reload`.
+4. Reboot or `ifup wwan` — hotplug will discover it automatically, no script edits needed.
+
 ## 13. End-to-end tests
 
 1. Client on Wi-Fi → `curl https://api.ipify.org` returns the VPN server's public IP, not the upstream WAN.
