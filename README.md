@@ -293,12 +293,17 @@ Russian services (Ozon, Avito, Yandex, Sber, Госуслуги, такси, д�
 
 Design: dnsmasq-full resolves whitelisted domains and feeds the resolved IPs into nft dynamic sets `allow_domains_v4/v6`. A prerouting hook marks every packet to those IPs with fwmark 0x100. `ip rule` routes fwmark 0x100 into a dedicated table whose default goes via eth0. Firewall allows `lan → wan` forward only for marked packets — the kill switch stays intact for everything else.
 
-Domain list is pulled from community-maintained [itdoginfo/allow-domains](https://github.com/itdoginfo/allow-domains) (`Russia/inside-raw.lst`, ~500 Russian-consumer-facing domains). DNS for these domains is forced through Yandex DNS `77.88.8.8` over eth0 (NOT over the VPN) so we get Russian CDN edge IPs — otherwise a Polish-DoH resolver would return Polish Cloudflare IPs, defeating the bypass.
+Domain list is pulled from community-maintained [itdoginfo/allow-domains](https://github.com/itdoginfo/allow-domains) (`Russia/outside-raw.lst` — Russian domestic domains that geo-block foreign IPs: Ozon, Gosuslugi, RZhD, Pochta, Nalog, Mos.ru, Yandex.net, Leroy Merlin, etc.). Note the counter-intuitive naming: `outside-raw.lst` is for users *outside* Russia who need to reach Russian services — our case. `inside-raw.lst` is the opposite list (RKN-blocked foreign sites) which should stay inside the VPN.
+
+DNS for these domains is forced through Yandex DNS `77.88.8.8` over eth0 (NOT over the VPN) so we get Russian CDN edge IPs — otherwise a Polish-DoH resolver would return Polish Cloudflare IPs, defeating the bypass.
 
 ### Install
 
 ```sh
 # 1. Replace stock dnsmasq with dnsmasq-full (needed for nftset directive)
+#    AND run dnsmasq as root (default `dnsmasq` user has no CAP_NET_ADMIN
+#    inside the ujail sandbox, so nftset= directives silently never
+#    populate the set even though dnsmasq-full is compiled with nftset).
 apk update
 apk add dnsmasq-full
 
@@ -317,6 +322,11 @@ install -m 755 scripts/update-bypass-list.sh          /usr/bin/update-bypass-lis
 # 4. Merge firewall + dhcp changes (or copy configs/firewall and configs/dhcp
 #    wholesale if this is a fresh install):
 fw4 reload
+
+# 4b. Patch dnsmasq init script to run as root (mandatory — otherwise nftset
+#     won't populate). Idempotent; re-run after every dnsmasq-full apk upgrade.
+install -m 755 scripts/fix-dnsmasq-user.sh /usr/bin/fix-dnsmasq-user
+/usr/bin/fix-dnsmasq-user
 /etc/init.d/dnsmasq restart
 
 # 5. First-run the update script to populate /etc/dnsmasq.d/allow-domains.conf
@@ -353,6 +363,7 @@ ssh root@pi5 ifup awg0
 
 ### Caveats
 
+- itdoginfo `outside-raw.lst` is deliberately minimal (~37 Russian-only domains). It does not include Avito, Wildberries, Sberbank, yandex.ru root, or most banks. Add them via a user-override — put extra domains in `/etc/allow-domains-user.lst` (one per line) and extend `update-bypass-list.sh` to append them, or drop a separate `/etc/dnsmasq.d/allow-domains-user.conf` with the same `nftset=`/`server=` triplets.
 - Clients using their own DoH/DoT (iOS Private Relay, Firefox DoH) bypass our dnsmasq → `allow_domains_*` sets never get populated → their Russian-site traffic stays in the VPN. Either disable encrypted DNS on clients or accept the limitation.
 - CDN-IP collisions: if a Russian site shares a Cloudflare edge IP with a VPN-only site, the bypass will also let the other site out. Mitigated by 1 h dynamic timeout on the sets.
 - When the VPN is down, bypassed domains keep working through the real WAN — this is by design, but worth knowing: the kill switch is only for non-bypassed traffic.

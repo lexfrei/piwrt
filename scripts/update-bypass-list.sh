@@ -2,10 +2,10 @@
 # /usr/bin/update-bypass-list
 #
 # Pulls a fresh Russian bypass-domain list and regenerates
-# /etc/dnsmasq.d/allow-domains.conf with two directives per domain:
+# /etc/dnsmasq.d/allow-domains.conf with three directives per domain:
 #
-#   nftset=/<domain>/4#inet#fw4#allow_domains_v4
-#   nftset=/<domain>/6#inet#fw4#allow_domains_v6
+#   nftset=/<domain>/inet#fw4#allow_domains_v4     (IPv4 — no family prefix)
+#   nftset=/<domain>/6#inet#fw4#allow_domains_v6   (IPv6 — explicit '6#')
 #   server=/<domain>/77.88.8.8
 #
 # The nftset directives tell dnsmasq to dump resolved IPs into the nft
@@ -19,7 +19,12 @@
 
 set -eu
 
-SRC_URL='https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-raw.lst'
+# Russia/outside-raw.lst is the list of *Russian domestic* domains that
+# block foreign IPs (banks, marketplaces, gov services). That is what we
+# want to route around the VPN so they see our real Russian ISP address.
+# NOT inside-raw.lst — that one contains domains blocked *inside* Russia
+# by RKN (reverse of our goal).
+SRC_URL='https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/outside-raw.lst'
 RU_RESOLVER='77.88.8.8'
 NFT_TABLE='inet#fw4'
 SET_V4='allow_domains_v4'
@@ -28,7 +33,7 @@ SET_V6='allow_domains_v6'
 OUT_FILE='/etc/dnsmasq.d/allow-domains.conf'
 TMP_RAW='/tmp/allow-domains-raw.lst'
 TMP_OUT='/tmp/allow-domains.conf.new'
-MIN_DOMAINS=100
+MIN_DOMAINS=20
 
 echo "Fetching ${SRC_URL}"
 uclient-fetch -4 --quiet -O "$TMP_RAW" "$SRC_URL"
@@ -46,7 +51,7 @@ echo "# Domains: $COUNT" >> "$TMP_OUT"
 
 # Skip comments and blank lines, emit three directives per domain.
 grep -E '^[a-zA-Z0-9]' "$TMP_RAW" | while IFS= read -r domain; do
-    printf 'nftset=/%s/4#%s#%s\n' "$domain" "$NFT_TABLE" "$SET_V4" >> "$TMP_OUT"
+    printf 'nftset=/%s/%s#%s\n' "$domain" "$NFT_TABLE" "$SET_V4" >> "$TMP_OUT"
     printf 'nftset=/%s/6#%s#%s\n' "$domain" "$NFT_TABLE" "$SET_V6" >> "$TMP_OUT"
     printf 'server=/%s/%s\n' "$domain" "$RU_RESOLVER" >> "$TMP_OUT"
 done
