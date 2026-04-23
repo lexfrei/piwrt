@@ -1,7 +1,12 @@
-# /etc/config/firewall — full-tunnel + kill switch.
+# /etc/config/firewall — full-tunnel + kill switch with split-VPN bypass.
 #
-# No forwarding from lan to wan exists, so if awg0 is down, clients can't
-# leak through the upstream link.
+# There is NO blanket `config forwarding lan → wan` — so by default clients
+# cannot leak through the upstream if awg0 is down (kill switch intact).
+# Split-tunnel traffic is allowed via a targeted rule that only accepts
+# forward from lan to wan when the packet carries fwmark 0x100. That mark
+# is set by 50-allow-domains.nft on packets destined to IPs in the
+# allow_domains_v4/v6 nft sets (populated by dnsmasq-full from
+# /etc/dnsmasq.d/allow-domains.conf).
 #
 # SSH-WAN rule allows administering the router from the upstream LAN. Keep
 # permanently if the upstream LAN is trusted (behind your own router);
@@ -71,4 +76,15 @@ config rule
     option src 'wan'
     option proto 'tcp'
     option dest_port '22'
+    option target 'ACCEPT'
+
+# Split-VPN: accept lan → wan forward only when the packet carries
+# fwmark 0x100 (set by 50-allow-domains.nft on bypass-listed destinations).
+# Without this rule, split-tunnel traffic would be dropped by the default
+# forward REJECT policy. Non-marked traffic is still blocked → kill switch.
+config rule
+    option name 'Split-VPN-bypass'
+    option src 'lan'
+    option dest 'wan'
+    option mark '0x100/0x100'
     option target 'ACCEPT'

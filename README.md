@@ -1,18 +1,25 @@
 # piwrt
 
-Raspberry Pi 5 + OpenWrt 25.12.2: Wi-Fi access point that tunnels all client traffic through an AmneziaWG v2 VPN, with DoH upstream and a DNS-level kill switch.
+Raspberry Pi 5 + OpenWrt 25.12.2: Wi-Fi access point that tunnels all client traffic through an AmneziaWG v2 VPN, with DoH upstream, a DNS-level kill switch, and a domain-based split-tunnel that bypasses the VPN for Russian services (Ozon, Avito, Yandex, banks, gov services) so their anti-fraud doesn't trip on a foreign exit IP.
 
 ## Architecture
 
 ```text
 [upstream router] ── eth0 (WAN, DHCP) ── RPi5 ── phy0-ap0 (AP 5 GHz, br-lan) ── clients (192.168.1.0/24)
                                           │
-                                          ├── awg0 (AmneziaWG v2)  ── [VPN server]
+                                          ├── awg0 (AmneziaWG v2) ── default route ── [VPN server]
                                           │
-                                          └── 127.0.0.1:5053 (https-dns-proxy, DoH Cloudflare)
+                                          ├── 127.0.0.1:5053 (https-dns-proxy, DoH Cloudflare via awg0)
+                                          │
+                                          └── fwmark 0x100 → table 100 (default via eth0)
+                                              ↑
+                                              nftables sets allow_domains_v4/v6
+                                              populated by dnsmasq-full when clients
+                                              resolve domains from
+                                              itdoginfo/allow-domains (Russia/inside-raw)
 ```
 
-Firewall forwards **only** `lan → awg`. No `lan → wan` rule → if the tunnel drops, clients lose internet (kill switch).
+Firewall forwards `lan → awg` for all traffic, and `lan → wan` only when a packet carries fwmark 0x100. No generic `lan → wan` rule → if the tunnel drops, non-bypassed clients still lose internet (kill switch intact for anything not in the bypass list).
 
 ## Scope, explicitly
 
@@ -280,13 +287,84 @@ uci commit dhcp
 
 Reconnect existing clients (Forget + rejoin) to pick up the new lease.
 
-## 12. End-to-end tests
+## 12. Split-VPN: bypass for Russian services
+
+Russian services (Ozon, Avito, Yandex, Sber, Госуслуги, такси, доставки) have aggressive anti-fraud that sees a Polish exit IP as suspicious and reacts with captchas, SMS verification, or outright API rejection. Solution: route traffic to a whitelist of Russian domains through eth0 (real home ISP IP) while keeping everything else in the AWG tunnel.
+
+Design: dnsmasq-full resolves whitelisted domains and feeds the resolved IPs into nft dynamic sets `allow_domains_v4/v6`. A prerouting hook marks every packet to those IPs with fwmark 0x100. `ip rule` routes fwmark 0x100 into a dedicated table whose default goes via eth0. Firewall allows `lan → wan` forward only for marked packets — the kill switch stays intact for everything else.
+
+Domain list is pulled from community-maintained [itdoginfo/allow-domains](https://github.com/itdoginfo/allow-domains) (`Russia/inside-raw.lst`, ~500 Russian-consumer-facing domains). DNS for these domains is forced through Yandex DNS `77.88.8.8` over eth0 (NOT over the VPN) so we get Russian CDN edge IPs — otherwise a Polish-DoH resolver would return Polish Cloudflare IPs, defeating the bypass.
+
+### Install
+
+```sh
+# 1. Replace stock dnsmasq with dnsmasq-full (needed for nftset directive)
+apk update
+apk add dnsmasq-full
+
+# If apk refuses due to conflict with base `dnsmasq`, drop it first:
+# apk del dnsmasq && apk add dnsmasq-full
+
+# 2. Stop any stale mwan3 from earlier experiments
+/etc/init.d/mwan3 stop 2>/dev/null
+/etc/init.d/mwan3 disable 2>/dev/null
+
+# 3. Drop nft rules, hotplug, and the update script
+install -m 644 configs/nftables/50-allow-domains.nft /etc/nftables.d/50-allow-domains.nft
+install -m 755 scripts/split-vpn-init.sh              /etc/hotplug.d/iface/90-split-vpn
+install -m 755 scripts/update-bypass-list.sh          /usr/bin/update-bypass-list
+
+# 4. Merge firewall + dhcp changes (or copy configs/firewall and configs/dhcp
+#    wholesale if this is a fresh install):
+fw4 reload
+/etc/init.d/dnsmasq restart
+
+# 5. First-run the update script to populate /etc/dnsmasq.d/allow-domains.conf
+update-bypass-list
+
+# 6. Trigger the hotplug to install ip rule + ip route
+ifdown wan && ifup wan
+
+# 7. Schedule weekly refresh
+echo '0 6 * * 0 /usr/bin/update-bypass-list' >> /etc/crontabs/root
+/etc/init.d/cron reload
+```
+
+### Verify
+
+```sh
+# nft set is populated after a client resolves a bypass domain
+nft list set inet fw4 allow_domains_v4 | head -10
+
+# ip rule shows the fwmark lookup
+ip rule list | grep 0x100
+
+# routing table 100 has eth0 default
+ip route show table 100
+
+# From a Wi-Fi client:
+curl --silent https://api.ipify.org        # → VPN exit IP (Poland)
+curl --silent https://ipv4.ozon.ru/health  # → works, no captcha
+ssh root@pi5 ifdown awg0
+curl --max-time 3 https://api.ipify.org    # times out (kill switch)
+curl --max-time 3 https://ozon.ru/         # still works (bypass keeps going)
+ssh root@pi5 ifup awg0
+```
+
+### Caveats
+
+- Clients using their own DoH/DoT (iOS Private Relay, Firefox DoH) bypass our dnsmasq → `allow_domains_*` sets never get populated → their Russian-site traffic stays in the VPN. Either disable encrypted DNS on clients or accept the limitation.
+- CDN-IP collisions: if a Russian site shares a Cloudflare edge IP with a VPN-only site, the bypass will also let the other site out. Mitigated by 1 h dynamic timeout on the sets.
+- When the VPN is down, bypassed domains keep working through the real WAN — this is by design, but worth knowing: the kill switch is only for non-bypassed traffic.
+
+## 13. End-to-end tests
 
 1. Client on Wi-Fi → `curl https://api.ipify.org` returns the VPN server's public IP, not the upstream WAN.
-2. `ifdown awg0` on the Pi → client internet dies → `ifup awg0` → recovers in ~10s.
-3. `dnsleaktest.com` shows only the Cloudflare DoH resolver.
-4. `reboot` the Pi → everything comes back on its own within ~60 s.
-5. Gaming consoles: check NAT type via Test Connection. Commercial VPN providers often rate-limit gaming UDP — `2306-0332` on Switch with correct MTU and DNS probably means the VPN exit blocks game traffic. Try a different `.conf` from another country.
+2. `ifdown awg0` on the Pi → non-bypass internet dies → `ifup awg0` → recovers in ~10s.
+3. `curl https://ozon.ru/` with Wi-Fi client continues to work after `ifdown awg0` — bypass is active.
+4. `dnsleaktest.com` shows only the Cloudflare DoH resolver for non-bypassed queries.
+5. `reboot` the Pi → everything comes back on its own within ~60 s.
+6. Gaming consoles: check NAT type via Test Connection. Commercial VPN providers often rate-limit gaming UDP — `2306-0332` on Switch with correct MTU and DNS probably means the VPN exit blocks game traffic. Try a different `.conf` from another country.
 
 ## Known gotchas — one-line cheatsheet
 
@@ -300,6 +378,8 @@ Reconnect existing clients (Forget + rejoin) to pick up the new lease.
 - DHCP option 26 for MTU 1280, **never** `network.lan.mtu`
 - DoH bootstrap chicken-and-egg → point dnsmasq at `1.1.1.1` temporarily
 - Root password → `passwd -l root` after ssh key is in place
+- Split-VPN → `dnsmasq-full` (base lacks `nftset`), nft sets + fwmark + ip rule, `lan → wan` forward only with `option mark '0x100/0x100'` to preserve kill switch
+- RU resolver in allow-domains.conf MUST be reachable via eth0 (not awg0) — hotplug pins `77.88.8.8/32` to wan gateway
 
 ## Repository layout
 
@@ -309,10 +389,14 @@ piwrt/
 ├── configs/
 │   ├── network                        UCI: br-lan, wan, wan6, awg0 + peer
 │   ├── wireless                       UCI: BCM43455 AP on 5 GHz channel 36
-│   ├── firewall                       UCI: full-tunnel + kill switch + SSH-WAN
-│   ├── dhcp                           UCI: DHCP option 26 MTU 1280, DoH-ready dnsmasq
-│   └── amneziawg_awg0.example         /etc/amneziawg/awg0.conf template
+│   ├── firewall                       UCI: full-tunnel + kill switch + SSH-WAN + split-VPN marked
+│   ├── dhcp                           UCI: DHCP option 26 MTU 1280, DoH-ready dnsmasq, confdir
+│   ├── amneziawg_awg0.example         /etc/amneziawg/awg0.conf template
+│   └── nftables/
+│       └── 50-allow-domains.nft       nft sets + mangle hook for split-VPN marking
 ├── scripts/
-│   └── install-awg.sh                 downloads + installs the 3 AWG apks (25.12.2)
+│   ├── install-awg.sh                 downloads + installs the 3 AWG apks (25.12.2)
+│   ├── split-vpn-init.sh              /etc/hotplug.d/iface/90-split-vpn — ip rule + table 100 on wan up
+│   └── update-bypass-list.sh          /usr/bin/update-bypass-list — pulls itdoginfo list, regens dnsmasq conf
 └── .gitignore
 ```

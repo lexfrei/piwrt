@@ -14,6 +14,13 @@
 #      list server '<VPN_DNS_IP_FROM_YOUR_AWG_CONF>'
 #  - Never point at an upstream that isn't reachable through the tunnel —
 #    otherwise DNS leaks outside the kill switch.
+#
+# Split-VPN: `option confdir '/etc/dnsmasq.d'` lets dnsmasq auto-load
+# additional files placed there. scripts/update-bypass-list.sh writes
+# /etc/dnsmasq.d/allow-domains.conf with `nftset=/domain/4#inet#fw4#...`
+# and `server=/domain/77.88.8.8` directives for each Russian bypass
+# domain. Requires dnsmasq-full (base `dnsmasq` is compiled without
+# nftset support).
 
 config dnsmasq
     option domainneeded '1'
@@ -31,6 +38,7 @@ config dnsmasq
     option localservice '1'
     option ednspacket_max '1232'
     option noresolv '1'
+    option confdir '/etc/dnsmasq.d'
     # list server '<VPN_DNS_IP>'   # only if NOT using https-dns-proxy
 
 config dhcp 'lan'
