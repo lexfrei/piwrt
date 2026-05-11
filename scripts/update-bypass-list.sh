@@ -31,6 +31,7 @@ SET_V4='allow_domains_v4'
 SET_V6='allow_domains_v6'
 
 OUT_FILE='/etc/dnsmasq.d/allow-domains.conf'
+USER_FILE='/etc/allow-domains-user.lst'
 TMP_RAW='/tmp/allow-domains-raw.lst'
 TMP_OUT='/tmp/allow-domains.conf.new'
 MIN_DOMAINS=20
@@ -56,10 +57,27 @@ grep -E '^[a-zA-Z0-9]' "$TMP_RAW" | while IFS= read -r domain; do
     printf 'server=/%s/%s\n' "$domain" "$RU_RESOLVER" >> "$TMP_OUT"
 done
 
+# User-supplied additions: $USER_FILE, one domain per line, '#' comments.
+# Same three directives per domain. Empty/missing file is fine.
+USER_COUNT=0
+if [ -f "$USER_FILE" ]; then
+    USER_COUNT=$(grep -cE '^[a-zA-Z0-9]' "$USER_FILE" 2>/dev/null || echo 0)
+    if [ "$USER_COUNT" -gt 0 ]; then
+        echo "" >> "$TMP_OUT"
+        echo "# User overrides from $USER_FILE ($USER_COUNT domains)" >> "$TMP_OUT"
+        grep -E '^[a-zA-Z0-9]' "$USER_FILE" | while IFS= read -r domain; do
+            printf 'nftset=/%s/%s#%s\n' "$domain" "$NFT_TABLE" "$SET_V4" >> "$TMP_OUT"
+            printf 'nftset=/%s/6#%s#%s\n' "$domain" "$NFT_TABLE" "$SET_V6" >> "$TMP_OUT"
+            printf 'server=/%s/%s\n' "$domain" "$RU_RESOLVER" >> "$TMP_OUT"
+        done
+    fi
+fi
+
 mv "$TMP_OUT" "$OUT_FILE"
 rm -f "$TMP_RAW"
 
-echo "Wrote $OUT_FILE ($COUNT domains, $(wc -l < "$OUT_FILE") dnsmasq directives)"
+TOTAL=$((COUNT + USER_COUNT))
+echo "Wrote $OUT_FILE ($COUNT upstream + $USER_COUNT user = $TOTAL domains, $(wc -l < "$OUT_FILE") dnsmasq directives)"
 
 /etc/init.d/dnsmasq reload
 echo "dnsmasq reloaded"

@@ -1,0 +1,53 @@
+# /etc/allow-domains-user.lst
+#
+# Domains to add to the split-VPN bypass on top of the upstream
+# itdoginfo Russia/outside-raw.lst. One domain per line.
+#
+# Same matching as the upstream list — dnsmasq matches subdomains.
+# 'avito.ru' covers m.avito.ru, www.avito.ru, autoteka.avito.ru, etc.
+#
+# Copy this file to /etc/allow-domains-user.lst on the router and edit.
+# Then: update-bypass-list      # picks it up automatically.
+#
+# Lines starting with '#' or whitespace are ignored.
+
+# Marketplaces / e-commerce
+avito.ru
+wildberries.ru
+ozon.travel
+mvideo.ru
+dns-shop.ru
+citilink.ru
+letoile.ru
+lamoda.ru
+
+# Banks / fintech (RU anti-fraud is strictest here)
+sberbank.ru
+sber.ru
+tinkoff.ru
+t-bank.ru
+alfabank.ru
+vtb.ru
+gazprombank.ru
+raiffeisen.ru
+sovcombank.ru
+yoomoney.ru
+
+# Yandex root (not in upstream — only yandex.net is)
+yandex.ru
+
+# Food delivery / taxi
+delivery-club.ru
+sushiwok.ru
+kfc.ru
+dodopizza.ru
+
+# Telecom self-service
+megafon.ru
+beeline.ru
+mts.ru
+tele2.ru
+
+# Misc
+kassir.ru
+rzd.ru

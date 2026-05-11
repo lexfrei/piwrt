@@ -361,9 +361,17 @@ curl --max-time 3 https://ozon.ru/         # still works (bypass keeps going)
 ssh root@pi5 ifup awg0
 ```
 
-### Caveats
+### User overrides
 
-- itdoginfo `outside-raw.lst` is deliberately minimal (~37 Russian-only domains). It does not include Avito, Wildberries, Sberbank, yandex.ru root, or most banks. Add them via a user-override — put extra domains in `/etc/allow-domains-user.lst` (one per line) and extend `update-bypass-list.sh` to append them, or drop a separate `/etc/dnsmasq.d/allow-domains-user.conf` with the same `nftset=`/`server=` triplets.
+itdoginfo `outside-raw.lst` is deliberately minimal (~37 Russian-only domains) and does not include Avito, Wildberries, Sberbank, yandex.ru root, or most banks. Add them in `/etc/allow-domains-user.lst` — one domain per line, `#`-prefixed comments allowed. `update-bypass-list.sh` picks it up automatically: every domain from the user file gets the same three `nftset=`/`server=` directives appended to `/etc/dnsmasq.d/allow-domains.conf`. See `configs/allow-domains-user.lst.example` for a starter set covering common marketplaces, banks, telecom self-service portals, and yandex.ru root.
+
+```sh
+cp configs/allow-domains-user.lst.example /etc/allow-domains-user.lst   # or write your own
+# edit /etc/allow-domains-user.lst as needed
+update-bypass-list
+```
+
+### Caveats
 - Clients using their own DoH/DoT (iOS Private Relay, Firefox DoH) bypass our dnsmasq → `allow_domains_*` sets never get populated → their Russian-site traffic stays in the VPN. Either disable encrypted DNS on clients or accept the limitation.
 - CDN-IP collisions: if a Russian site shares a Cloudflare edge IP with a VPN-only site, the bypass will also let the other site out. Mitigated by 1 h dynamic timeout on the sets.
 - When the VPN is down, bypassed domains keep working through the real WAN — this is by design, but worth knowing: the kill switch is only for non-bypassed traffic.
