@@ -15,7 +15,7 @@
 
 set -eu
 
-VERSION="v25.12.2"
+VERSION="v25.12.3"
 ARCH="aarch64_cortex-a76_bcm27xx_bcm2712"
 URL="https://github.com/Slava-Shchipunov/awg-openwrt/releases/download/${VERSION}"
 
