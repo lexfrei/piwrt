@@ -522,7 +522,7 @@ piwrt/
 │   ├── amneziawg_awg0.example           /etc/amneziawg/awg0.conf template
 │   ├── allow-domains-user.lst.example   /etc/allow-domains-user.lst starter — extra bypass domains
 │   ├── sysupgrade.conf                  /etc/sysupgrade.conf additions — keep helpers across upgrades
-│   ├── rc.local                         /etc/rc.local additions — Pi5 fan + AWG-ensure hook
+│   ├── rc.local.append                  fragment to append to /etc/rc.local — Pi5 fan + AWG-ensure hook
 │   └── nftables/
 │       └── 50-allow-domains.nft         nft sets + mangle hook for split-VPN marking
 ├── scripts/
