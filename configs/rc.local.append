@@ -1,0 +1,21 @@
+# /etc/rc.local additions
+#
+# Append these blocks to /etc/rc.local on the router, before the final
+# `exit 0` line. They are idempotent — when there is nothing to do, they
+# return immediately, so re-running the file is safe.
+
+# Pi5 active cooler: set the on-board fan to automatic temperature-based PWM
+# control. Without this it sits at full speed or full stop depending on stock
+# DT defaults, which is loud or risky.
+[ -f /sys/devices/platform/cooling_fan/hwmon/hwmon3/pwm1_enable ] && \
+    echo 2 > /sys/devices/platform/cooling_fan/hwmon/hwmon3/pwm1_enable
+
+# piwrt-awg-ensure: reinstall AmneziaWG packages after sysupgrade if missing.
+# The kmod-amneziawg kernel module is built against a specific kernel ABI,
+# so it does not survive a kernel bump (sysupgrade replaces the kernel).
+# `awg --version` returning non-zero is the cheap test for "tools missing or
+# kmod broken"; in that case we run the keep-listed installer asynchronously
+# so boot continues normally while the install proceeds in the background.
+[ -x /usr/share/piwrt/install-awg.sh ] && ! awg --version >/dev/null 2>&1 && \
+    (logger -t piwrt-awg-ensure "AWG missing, installing async"; \
+     sh /usr/share/piwrt/install-awg.sh > /tmp/piwrt-awg-install.log 2>&1 &)

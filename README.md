@@ -411,7 +411,7 @@ mkdir -p /usr/share/piwrt
 install -m 755 scripts/install-awg.sh /usr/share/piwrt/install-awg.sh
 ```
 
-Append the contents of [configs/rc.local](configs/rc.local) to `/etc/rc.local` (before the final `exit 0`). On every boot the hook checks `awg --version`; if AWG is missing — fresh sysupgrade, ABI mismatch, whatever — it runs the installer asynchronously so boot continues normally and the tunnel comes up a few seconds later in the background.
+Append the contents of [configs/rc.local.append](configs/rc.local.append) to `/etc/rc.local` (before the final `exit 0`). On every boot the hook checks `awg --version`; if AWG is missing — fresh sysupgrade, ABI mismatch, whatever — it runs the installer asynchronously so boot continues normally and the tunnel comes up a few seconds later in the background.
 
 ### Watchdogs
 
