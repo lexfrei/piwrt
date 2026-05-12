@@ -38,6 +38,7 @@ Does exactly one thing: receive internet over ethernet, broadcast Wi-Fi, shove c
 - **2.4 GHz AP mode is broken** on the built-in BCM43455 of at least one RPi5 unit after a few `wifi down; wifi up` cycles — beacon goes out (clients see SSID at 100% signal), but RX packets counter on `phy0-ap0` stays at **0** and no STA auth/assoc events appear in hostapd log. Clients silently cannot associate. A `reboot`, `rmmod brcmfmac`, full power-cycle, OpenWrt bump 24.10 → 25.12, and CMDline tweaks do not revive 2.4 GHz RX. **5 GHz AP mode works fine** on the same chip at the same moment — we confirmed RX by putting the chip in STA mode and associating with an upstream 5 GHz AP.
 - **Use 5 GHz. Fix a channel explicitly** (`brcmfmac` doesn't support ACS — `hostapd` fails with `ACS: Unable to collect survey data` on 'auto'). Channel 36, HT20 is a safe default.
 - **Don't put `@` or `.` in the SSID.** OpenWrt's hostapd has `utf8_ssid=1` by default, which forces it to encode such SSIDs as `ssid2="..."` (hex-quoted). Many clients (macOS, Nintendo Switch) silently refuse to associate to an `ssid2=` network — you see beacon, association just never happens and nothing logs. Plain ASCII without `@`/`.` works.
+- **Do not overwrite `/lib/firmware/brcm/brcmfmac43455-sdio.raspberrypi,4-model-b.txt`.** This is the NVRAM blob that `brcmfmac` loads into the chip at probe time — a stray `echo something > file` or a misfired script that truncates it to a few bytes leaves the chip uninitialised, `dmesg` shows `brcmfmac: brcmf_sdio_htclk: HT Avail timeout (1000000): clkctl 0x50`, and `iw dev` is empty. No amount of `reboot`/`rmmod brcmfmac`/power-cycle recovers it, because the file content is wrong on disk. Fix: `wget -O <path> https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bookworm/debian/config/brcm80211/brcm/brcmfmac43455-sdio.txt` (this is the upstream source used by the `brcmfmac-nvram-43455-sdio` apk in OpenWrt). Note that `apk fix` / `apk add --reinstall` do **not** restore the file — OpenWrt's apk-tools build does not implement `--reinstall`, and `apk fix` no-ops if the package DB thinks the file is fine. Direct `wget` is the reliable path.
 
 ### PSU
 
@@ -171,12 +172,13 @@ After the next `sysupgrade`, our NVMe params survive.
 uci set wireless.radio0.band='5g'
 uci set wireless.radio0.channel='36'          # fixed; brcmfmac has no ACS
 uci set wireless.radio0.htmode='HT20'
-uci set wireless.radio0.country='RU'          # phy won't actually pick this up (baked-in BCM bug — phy0 stays country 99), but harmless
+uci set wireless.radio0.country='RU'          # passed to hostapd as metadata; phy0 itself reports country 99 because brcmfmac wiphy is self-managed — harmless
 uci set wireless.radio0.legacy_rates='1'
 uci set wireless.radio0.disabled='0'
 uci set wireless.default_radio0.ssid='piwrt'  # ASCII only — see hostapd/ssid2 caveat above
 uci set wireless.default_radio0.hidden='0'    # optional; 'hidden 1' works, but clients see the AP faster when broadcast
-uci set wireless.default_radio0.encryption='psk2'
+uci set wireless.default_radio0.encryption='sae-mixed'  # WPA3-SAE with WPA2-PSK fallback for older clients
+uci set wireless.default_radio0.wps_pushbutton='0'      # disable WPS — PIN brute-force is a known vector
 uci set wireless.default_radio0.key='<WIFI_PASSWORD_MIN_8_CHARS>'
 uci commit wireless
 wifi
@@ -187,6 +189,8 @@ cat /sys/class/net/phy0-ap0/statistics/rx_packets
 ```
 
 After a client connects, `rx_packets` should climb. If it stays at 0 → you have the 2.4 GHz RX brickening problem. Confirm 5 GHz is in use and re-check.
+
+`sae-mixed` advertises both SAE (WPA3) and PSK2 (WPA2) on the same SSID with a shared passphrase. New clients negotiate SAE automatically, older ones fall back to PSK2 — no separate SSID needed. If every client you own supports WPA3, use plain `sae` instead.
 
 ## 7. Install AmneziaWG v2
 
@@ -392,7 +396,96 @@ update-bypass-list
 3. Add `wwan` to the `wan` firewall zone: `uci add_list firewall.@zone[1].network='wwan'`, commit, `fw4 reload`.
 4. Reboot or `ifup wwan` — hotplug will discover it automatically, no script edits needed.
 
-## 13. End-to-end tests
+## 13. After-install hardening
+
+A clean install gets the tunnel and the AP running. The bits below survive reboots and sysupgrades, catch the failure modes documented above before they need manual intervention, and make the box pleasant to debug six months from now.
+
+### Survive sysupgrade
+
+OpenWrt's default sysupgrade keep-list preserves `/etc/config/*` and SSH host keys, but nothing else. Our installer lives at `/usr/share/piwrt/install-awg.sh` and the watchdog scripts at `/usr/bin/awg-watchdog`, `/usr/bin/wifi-watchdog`, etc. — without explicit entries they all vanish on every kernel bump. Append [configs/sysupgrade.conf](configs/sysupgrade.conf) to `/etc/sysupgrade.conf` once; the list is idempotent.
+
+Then drop the installer into its surviving location and wire it to rc.local so that a fresh kernel ABI does not leave you tunnel-less:
+
+```sh
+mkdir -p /usr/share/piwrt
+install -m 755 scripts/install-awg.sh /usr/share/piwrt/install-awg.sh
+```
+
+Append the contents of [configs/rc.local](configs/rc.local) to `/etc/rc.local` (before the final `exit 0`). On every boot the hook checks `awg --version`; if AWG is missing — fresh sysupgrade, ABI mismatch, whatever — it runs the installer asynchronously so boot continues normally and the tunnel comes up a few seconds later in the background.
+
+### Watchdogs
+
+Two small cron jobs catch the failures we have already paid for:
+
+```sh
+install -m 755 scripts/awg-watchdog  /usr/bin/awg-watchdog
+install -m 755 scripts/wifi-watchdog /usr/bin/wifi-watchdog
+cat >> /etc/crontabs/root <<'EOF'
+*/2 * * * * /usr/bin/awg-watchdog
+*/5 * * * * /usr/bin/wifi-watchdog
+EOF
+/etc/init.d/cron restart
+```
+
+`awg-watchdog` restarts `awg0` if the last handshake is older than 180 seconds (a stale obfuscation state or upstream key rotation). `wifi-watchdog` brings `phy0-ap0` back if it has gone missing, escalating to `rmmod brcmfmac && modprobe brcmfmac` if `wifi up` alone is not enough. Both skip the first 90 seconds of uptime — NTP needs time to sync, and racing wifi-scripts during early boot just produces log noise.
+
+### Track changes to /etc
+
+OpenWrt has no native `etckeeper`, but `git` is in the feeds and a one-liner cron job suffices:
+
+```sh
+apk add git
+cd /etc
+git init
+git config user.email "root@piwrt"
+git config user.name  "piwrt root"
+cat > /etc/.gitignore <<'EOF'
+config-shadow/
+shadow
+shadow.bak
+shadow-
+gshadow
+gshadow-
+dropbear/dropbear_*_host_key
+ssh/ssh_host_*_key*
+resolv.conf
+resolv.conf.d/
+*.pid
+*.swp
+*.bak
+EOF
+git add -A
+git -c commit.gpgsign=false commit -m "baseline"
+
+cat > /usr/bin/etc-autocommit <<'EOF'
+#!/bin/sh
+cd /etc
+git add -A
+if ! git diff --cached --quiet; then
+    git -c commit.gpgsign=false commit -m "autocommit $(date -u +%Y-%m-%dT%H:%M:%SZ)" >/dev/null 2>&1
+    logger -t etc-autocommit "committed /etc drift"
+fi
+EOF
+chmod +x /usr/bin/etc-autocommit
+echo '17 * * * * /usr/bin/etc-autocommit' >> /etc/crontabs/root
+/etc/init.d/cron reload
+```
+
+Now `cd /etc && git log` answers "what changed yesterday at 03:00". With `/etc/.git/` and `/etc/.gitignore` in the sysupgrade keep-list (above), the history survives upgrades too.
+
+### Optional: vnstat traffic accounting
+
+If the uplink has a quota (cellular failover, leased line) it helps to see how many bytes go where:
+
+```sh
+apk add vnstat2
+/etc/init.d/vnstat enable
+/etc/init.d/vnstat start
+```
+
+Per-interface byte counters persist across reboots. Inspect with `vnstat --interface awg0` (or eth0, br-lan, phy0-ap0). No exporter, no dashboard — just numbers in the terminal.
+
+## 14. End-to-end tests
 
 1. Client on Wi-Fi → `curl https://api.ipify.org` returns the VPN server's public IP, not the upstream WAN.
 2. `ifdown awg0` on the Pi → non-bypass internet dies → `ifup awg0` → recovers in ~10s.
@@ -422,16 +515,22 @@ update-bypass-list
 piwrt/
 ├── README.md
 ├── configs/
-│   ├── network                        UCI: br-lan, wan, wan6, awg0 + peer
-│   ├── wireless                       UCI: BCM43455 AP on 5 GHz channel 36
-│   ├── firewall                       UCI: full-tunnel + kill switch + SSH-WAN + split-VPN marked
-│   ├── dhcp                           UCI: DHCP option 26 MTU 1280, DoH-ready dnsmasq, confdir
-│   ├── amneziawg_awg0.example         /etc/amneziawg/awg0.conf template
+│   ├── network                          UCI: br-lan, wan, wan6, awg0 + peer
+│   ├── wireless                         UCI: BCM43455 AP on 5 GHz channel 36
+│   ├── firewall                         UCI: full-tunnel + kill switch + SSH-WAN + split-VPN marked
+│   ├── dhcp                             UCI: DHCP option 26 MTU 1280, DoH-ready dnsmasq, confdir
+│   ├── amneziawg_awg0.example           /etc/amneziawg/awg0.conf template
+│   ├── allow-domains-user.lst.example   /etc/allow-domains-user.lst starter — extra bypass domains
+│   ├── sysupgrade.conf                  /etc/sysupgrade.conf additions — keep helpers across upgrades
+│   ├── rc.local                         /etc/rc.local additions — Pi5 fan + AWG-ensure hook
 │   └── nftables/
-│       └── 50-allow-domains.nft       nft sets + mangle hook for split-VPN marking
+│       └── 50-allow-domains.nft         nft sets + mangle hook for split-VPN marking
 ├── scripts/
-│   ├── install-awg.sh                 downloads + installs the 3 AWG apks (25.12.2)
-│   ├── split-vpn-init.sh              /etc/hotplug.d/iface/90-split-vpn — ip rule + table 100 on wan up
-│   └── update-bypass-list.sh          /usr/bin/update-bypass-list — pulls itdoginfo list, regens dnsmasq conf
+│   ├── install-awg.sh                   downloads + installs the AWG apks for 25.12.3
+│   ├── split-vpn-init.sh                /etc/hotplug.d/iface/90-split-vpn — ip rule + table 100 on wan up
+│   ├── update-bypass-list.sh            /usr/bin/update-bypass-list — pulls itdoginfo list, regens dnsmasq conf
+│   ├── fix-dnsmasq-user.sh              /usr/bin/fix-dnsmasq-user — patch dnsmasq init to run as root (nftset needs CAP_NET_ADMIN)
+│   ├── awg-watchdog                     /usr/bin/awg-watchdog — restart awg0 if handshake stale
+│   └── wifi-watchdog                    /usr/bin/wifi-watchdog — restore phy0-ap0, reload brcmfmac on hard fail
 └── .gitignore
 ```

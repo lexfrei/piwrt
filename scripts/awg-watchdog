@@ -1,0 +1,25 @@
+#!/bin/sh
+# /usr/bin/awg-watchdog — restart awg0 if the last handshake is stale.
+#
+# Run from cron every 2 minutes. The freshness threshold (180 s) is twice the
+# AmneziaWG keepalive interval, giving netifd one missed keepalive before we
+# stomp on the interface.
+#
+# Skip on fresh boot — NTP needs ~30 s to bring system time into sync, and
+# `awg show ... latest-handshakes` returns absolute UNIX time. If our clock
+# is wrong, age will look bogus (seen as "17 days ago" immediately after
+# reboot), and the watchdog would tear down a perfectly healthy tunnel.
+
+[ "$(cut -d. -f1 /proc/uptime)" -lt 90 ] && exit 0
+
+last=$(awg show awg0 latest-handshakes 2>/dev/null | awk '{print $2}')
+[ -z "$last" ] && last=0
+now=$(date +%s)
+age=$((now - last))
+
+if [ "$age" -gt 180 ]; then
+    logger -t awg-watchdog "stale handshake age=${age}s, restarting awg0"
+    ifdown awg0
+    sleep 2
+    ifup awg0
+fi

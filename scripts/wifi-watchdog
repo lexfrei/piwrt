@@ -1,0 +1,33 @@
+#!/bin/sh
+# /usr/bin/wifi-watchdog — bring Wi-Fi back if phy0-ap0 has disappeared.
+#
+# Run from cron every 5 minutes. Two-stage recovery:
+#   1. `wifi up` — handles the common case where netifd dropped the interface
+#      after a config reload but did not bring it back.
+#   2. `rmmod brcmfmac && modprobe brcmfmac && wifi up` — handles the SDIO
+#      "HT Avail timeout" lockup where the radio is technically gone from
+#      the bus and only a driver re-init can wake it.
+#
+# Skip on fresh boot — wifi-scripts and netifd are still racing during the
+# first 60-90 seconds, and a watchdog kick now just doubles the noise.
+
+[ "$(cut -d. -f1 /proc/uptime)" -lt 90 ] && exit 0
+
+if iw dev phy0-ap0 info >/dev/null 2>&1; then
+    exit 0
+fi
+
+logger -t wifi-watchdog "phy0-ap0 missing, attempting 'wifi up'"
+wifi up
+sleep 8
+
+if iw dev phy0-ap0 info >/dev/null 2>&1; then
+    exit 0
+fi
+
+logger -t wifi-watchdog "still missing, reloading brcmfmac"
+rmmod brcmfmac 2>/dev/null
+sleep 2
+modprobe brcmfmac
+sleep 6
+wifi up
