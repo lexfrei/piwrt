@@ -1,6 +1,6 @@
 # piwrt
 
-Raspberry Pi 5 + OpenWrt 25.12.2: Wi-Fi access point that tunnels all client traffic through an AmneziaWG v2 VPN, with DoH upstream, a DNS-level kill switch, and a domain-based split-tunnel that bypasses the VPN for Russian services (Ozon, Avito, Yandex, banks, gov services) so their anti-fraud doesn't trip on a foreign exit IP.
+Raspberry Pi 5 + OpenWrt 25.12.3: Wi-Fi access point that tunnels all client traffic through an AmneziaWG v2 VPN, with DoH upstream, a DNS-level kill switch, and a domain-based split-tunnel that bypasses the VPN for Russian services (Ozon, Avito, Yandex, banks, gov services) so their anti-fraud doesn't trip on a foreign exit IP.
 
 ## Architecture
 
@@ -71,9 +71,9 @@ Detach the NVMe, connect via USB-M.2 adapter to your workstation:
 
 ```bash
 curl --location --output /tmp/openwrt-rpi5.img.gz \
-  https://downloads.openwrt.org/releases/25.12.2/targets/bcm27xx/bcm2712/openwrt-25.12.2-bcm27xx-bcm2712-rpi-5-ext4-factory.img.gz
+  https://downloads.openwrt.org/releases/25.12.3/targets/bcm27xx/bcm2712/openwrt-25.12.3-bcm27xx-bcm2712-rpi-5-ext4-factory.img.gz
 curl --location --output /tmp/sha256sums \
-  https://downloads.openwrt.org/releases/25.12.2/targets/bcm27xx/bcm2712/sha256sums
+  https://downloads.openwrt.org/releases/25.12.3/targets/bcm27xx/bcm2712/sha256sums
 grep "ext4-factory" /tmp/sha256sums | awk '{print $1"  /tmp/openwrt-rpi5.img.gz"}' | shasum --algorithm 256 --check
 
 diskutil list external physical
@@ -194,13 +194,18 @@ OpenWrt 25.x uses **apk** (Alpine Package Kit) instead of opkg. Packages are `.a
 
 Slava-Shchipunov's builds target the `aarch64_cortex-a76_bcm27xx_bcm2712` architecture and end up in `.apk` format. Standard apk arch (`/etc/apk/arch`) is `aarch64_cortex-a76`, which is a superset match and accepts these packages.
 
+`kmod-amneziawg` declares dependencies on four kernel modules (`kmod-udptunnel4`, `kmod-udptunnel6`, `kmod-crypto-lib-chacha20poly1305`, `kmod-crypto-lib-curve25519`) that live in the standard OpenWrt feeds. Install them from the base repo first, then the three Slava-Shchipunov apks. `apk add` with the local file path doesn't auto-resolve transitive deps, so deps go first as a separate `apk add`.
+
 ```sh
 cd /tmp
-URL='https://github.com/Slava-Shchipunov/awg-openwrt/releases/download/v25.12.2'
-for f in kmod-amneziawg amneziawg-tools luci-proto-amneziawg; do
-  wget -O "${f}.apk" "$URL/${f}_v25.12.2_aarch64_cortex-a76_bcm27xx_bcm2712.apk"
-done
 apk update
+apk add kmod-udptunnel4 kmod-udptunnel6 \
+        kmod-crypto-lib-chacha20poly1305 kmod-crypto-lib-curve25519
+
+URL='https://github.com/Slava-Shchipunov/awg-openwrt/releases/download/v25.12.3'
+for f in kmod-amneziawg amneziawg-tools luci-proto-amneziawg; do
+  wget -O "${f}.apk" "$URL/${f}_v25.12.3_aarch64_cortex-a76_bcm27xx_bcm2712.apk"
+done
 apk add --allow-untrusted /tmp/kmod-amneziawg.apk /tmp/amneziawg-tools.apk /tmp/luci-proto-amneziawg.apk
 modprobe amneziawg
 awg --version
@@ -208,6 +213,8 @@ awg --version
 ```
 
 The package is named `luci-proto-amneziawg` (adds the network-page proto option); there is no separate `luci-app-amneziawg`.
+
+Or run [scripts/install-awg.sh](scripts/install-awg.sh) which does the above in one shot.
 
 ## 8. Configure awg0 from your `.conf`
 

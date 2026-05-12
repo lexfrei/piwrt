@@ -21,13 +21,19 @@ URL="https://github.com/Slava-Shchipunov/awg-openwrt/releases/download/${VERSION
 
 cd /tmp
 
+apk update
+
+# kmod-amneziawg declares deps on four kernel modules that live in the
+# standard OpenWrt feeds. `apk add file.apk` does not auto-resolve those
+# transitive deps, so install them from the base repo first.
+apk add kmod-udptunnel4 kmod-udptunnel6 \
+        kmod-crypto-lib-chacha20poly1305 kmod-crypto-lib-curve25519
+
 for pkg in kmod-amneziawg amneziawg-tools luci-proto-amneziawg; do
     f="${pkg}_${VERSION}_${ARCH}.apk"
     echo "Downloading ${f}"
     wget -q -O "/tmp/${f}" "${URL}/${f}"
 done
-
-apk update
 
 apk add --allow-untrusted \
     /tmp/kmod-amneziawg_*.apk \
