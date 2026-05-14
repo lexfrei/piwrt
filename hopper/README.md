@@ -431,6 +431,24 @@ The ICMP echo request leaving Hopper carries `ttl=65` because of the `mangle_pos
 - The modem decrements (otherwise the operator would see 65, also tethering-suspect),
 - The reply path is alive (so the rule isn't accidentally dropping anything).
 
+### RU operator CGNAT blocks plain DNS — DoH bootstrap subtlety
+
+Russian cellular operators (MegaFon confirmed, others likely) **block outbound plain UDP/53 from CGNAT clients** to public DNS resolvers (1.1.1.1, 1.0.0.1, 8.8.8.8). HTTPS/443 to the same IPs is not blocked.
+
+This breaks the default `https-dns-proxy` bootstrap path when the only working WAN is cellular:
+
+1. proxy starts with `resolver_url = https://cloudflare-dns.com/dns-query`,
+2. c-ares (the resolver library) tries to resolve `cloudflare-dns.com` via the bootstrap servers (`1.1.1.1:53` / `1.0.0.1:53` plain UDP),
+3. operator drops the UDP query, c-ares retries until channel destroyed,
+4. proxy enters a "bootstrapping not complete" state: it accepts incoming DNS queries on 127.0.0.1:5053 but discards them with `Query received before bootstrapping is completed`,
+5. dnsmasq's upstream silently times out, the router has no DNS for anything (including AWG endpoint resolution → tunnel won't come up).
+
+**Fix in [`configs/https-dns-proxy`](configs/https-dns-proxy)**: set `resolver_url` to an IP literal `https://1.1.1.1/dns-query`. No bootstrap resolve needed. Cloudflare's TLS cert covers `1.1.1.1` as a SAN, so cert validation passes. HTTPS/443 is not blocked, so the connection succeeds.
+
+After the AWG tunnel is up, https-dns-proxy's outbound DoH traffic rides through awg0 (since awg0 is default route in main table). At that point you could switch back to the hostname-based `resolver_url` and it'd work fine. But there's no reason to — the IP-literal form is strictly more robust and survives WAN failovers transparently.
+
+This also affects `post-upgrade.sh`'s `wait_for_wan` check. If the script reaches `nslookup downloads.openwrt.org` while the operator is blocking and the tunnel hasn't come up, the check fails and the script aborts. Symptom: `/tmp/piwrt-post-upgrade.log` empty after a reboot, custom packages not re-installed. With the IP-literal resolver, the DNS chain comes up immediately at boot, `wait_for_wan` passes, and `post-upgrade.sh` proceeds normally.
+
 ### What firmware does the modem run
 
 The HiLink web API (`http://192.168.8.1/api/device/information`) reports `SoftwareVersion: 10.0.5.1(H195SP3C983)`. The `C983` customer code is **not** China-specific despite high numbering — the author originally guessed it was, then the modem registered on MegaFon RU with a real `100.94.x.x` CGNAT IP and IPv6 (`2a03:d000::/32`, MegaFon's allocation). Cyrillic stickers inside the chassis are a much more reliable signal of regional intent than firmware customer-code heuristics.

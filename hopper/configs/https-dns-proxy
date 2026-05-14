@@ -1,9 +1,20 @@
 # /etc/config/https-dns-proxy — DoH listener on 127.0.0.1:5053.
 #
-# Bootstrap DNS (1.1.1.1, 1.0.0.1) is contacted ONLY to resolve the DoH
-# resolver hostname itself (cloudflare-dns.com), and since 1.1.1.1 is an
-# IP literal, that resolution actually does nothing — the proxy connects
-# straight to 1.1.1.1 over TLS to cloudflare-dns.com.
+# IMPORTANT: resolver_url uses an IP literal, not a hostname. Reason:
+# Russian cellular operators (MegaFon at least, others likely too)
+# routinely block plain UDP/53 from CGNAT clients to public DNS
+# resolvers (1.1.1.1, 1.0.0.1, 8.8.8.8). Bootstrap DNS — which c-ares
+# uses to resolve the resolver_url hostname over plain DNS — times out
+# silently, c-ares reports "Channel is being destroyed", and the proxy
+# enters a state where it accepts incoming DNS queries but discards
+# them with "Query received before bootstrapping is completed". The
+# proxy never logs an outbound TLS failure because TLS never gets a
+# chance to start.
+#
+# Using `https://1.1.1.1/dns-query` skips the bootstrap-resolve step
+# entirely. Cloudflare's cert covers `1.1.1.1` as a SAN, so cert
+# validation works. HTTPS/443 to 1.1.1.1 is not blocked by RU
+# operators — only plain DNS/53 is.
 #
 # After the tunnel is up, the proxy's outbound TLS to Cloudflare rides
 # through awg0 like everything else (since awg0 is the default route).
@@ -21,7 +32,7 @@ config main 'config'
 
 config https-dns-proxy
 	option bootstrap_dns '1.1.1.1,1.0.0.1'
-	option resolver_url 'https://cloudflare-dns.com/dns-query'
+	option resolver_url 'https://1.1.1.1/dns-query'
 	option listen_addr '127.0.0.1'
 	option listen_port '5053'
 	option user 'nobody'
