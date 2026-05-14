@@ -9,13 +9,15 @@
 # radios. No `legacy_rates`, no `country 'RU'` channel restrictions
 # beyond what the regulatory domain already enforces.
 #
-# Note on SSID with @ or .: OpenWrt's hostapd has utf8_ssid=1 by default
-# and emits `ssid2="..."` (quoted-string form) instead of `ssid=`. On the
-# BCM43455 piwrt setup this broke macOS / Nintendo Switch association.
-# On MT7976 the same emission was observed but the author reports clients
-# associate fine — apparently the BCM-era issue was a chip-specific quirk,
-# not a generic hostapd problem. Test with your client before betting on
-# it; fall back to plain ASCII if you see silent association failures.
+# SSID note: `@` and `.` in the SSID are fine on MT7976 (confirmed
+# end-to-end 2026-05-14 with `f@lex.la-liberated` — Switch + macOS
+# associate cleanly and reach the internet). The original Pi README's
+# blanket "no `@` or `.`" rule was either BCM43455-specific or a
+# misdiagnosis. hostapd with utf8_ssid=1 emits `ssid2="quoted-string"`
+# for printable-ASCII specials and that form is well-supported by
+# clients. The hex form `ssid2=HEX...` only appears for non-printable
+# or non-ASCII codepoints — that's the form that historically trips
+# strict clients, not the quoted-string form.
 
 config wifi-device 'radio0'
 	option type 'mac80211'

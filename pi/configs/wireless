@@ -9,10 +9,15 @@
 #      stays at 0, no STA auth events ever reach hostapd). 5 GHz AP mode
 #      on the same chip keeps working. Use 5 GHz.
 #
-# Also: SSID must be plain ASCII. Do NOT use '@' or '.' — OpenWrt's hostapd
-# has utf8_ssid=1 by default and encodes such SSIDs as ssid2="..." (hex-
-# quoted). macOS and Nintendo Switch silently refuse to associate with an
-# ssid2= network, beacons look fine, association never starts.
+# SSID note: original Pi README warned against '@' and '.' in SSIDs
+# (hostapd utf8_ssid=1 → ssid2= encoding → client association fails).
+# Retracted 2026-05-14 — re-test on a separate Hopper (MT7976 driver)
+# with `f@lex.la-liberated` showed Switch + macOS associate fine.
+# hostapd emits `ssid2="quoted-string"` for printable-ASCII specials,
+# and that form is well-supported. The hex-form `ssid2=HEX` only
+# appears for genuinely non-ASCII codepoints. Plain ASCII remains the
+# conservative default if you hit unexplained association issues, but
+# there's no longer a blanket reason to avoid `@`/`.`.
 
 config wifi-device 'radio0'
     option type 'mac80211'
@@ -28,7 +33,7 @@ config wifi-iface 'default_radio0'
     option device 'radio0'
     option network 'lan'
     option mode 'ap'
-    option ssid '<ASCII_SSID_NO_AT_OR_DOT>'
+    option ssid '<YOUR_SSID>'
     option hidden '0'
     option encryption 'psk2'
     option key '<WIFI_PASSWORD_MIN_8_CHARS>'

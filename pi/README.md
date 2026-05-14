@@ -37,7 +37,7 @@ Does exactly one thing: receive internet over ethernet, broadcast Wi-Fi, shove c
 
 - **2.4 GHz AP mode is broken** on the built-in BCM43455 of at least one RPi5 unit after a few `wifi down; wifi up` cycles — beacon goes out (clients see SSID at 100% signal), but RX packets counter on `phy0-ap0` stays at **0** and no STA auth/assoc events appear in hostapd log. Clients silently cannot associate. A `reboot`, `rmmod brcmfmac`, full power-cycle, OpenWrt bump 24.10 → 25.12, and CMDline tweaks do not revive 2.4 GHz RX. **5 GHz AP mode works fine** on the same chip at the same moment — we confirmed RX by putting the chip in STA mode and associating with an upstream 5 GHz AP.
 - **Use 5 GHz. Fix a channel explicitly** (`brcmfmac` doesn't support ACS — `hostapd` fails with `ACS: Unable to collect survey data` on 'auto'). Channel 36, HT20 is a safe default.
-- **Don't put `@` or `.` in the SSID.** OpenWrt's hostapd has `utf8_ssid=1` by default, which forces it to encode such SSIDs as `ssid2="..."` (hex-quoted). Many clients (macOS, Nintendo Switch) silently refuse to associate to an `ssid2=` network — you see beacon, association just never happens and nothing logs. Plain ASCII without `@`/`.` works.
+- **The `@`/`.`-in-SSID warning has been retracted.** Original observation on this Pi (2026-04-21) was that hostapd's `utf8_ssid=1` emits `ssid2="..."` and macOS / Nintendo Switch fail to associate. Re-tested 2026-05-14 on a Netcraze Hopper (MT7976 / mt76 driver) with `f@lex.la-liberated` — hostapd emits the SAME `ssid2="quoted-string"` form (because `@` and `.` are printable ASCII, hostapd quotes rather than hex-encodes), and Switch + macOS associate cleanly and reach the internet (confirmed end-to-end). So the original Pi symptom was either BCM43455-specific, an older hostapd version, or a misdiagnosis. The hex form `ssid2=HEX...` is only emitted for non-printable or non-ASCII codepoints — that's likely what trips strict clients, not the quoted-string form. Plain ASCII remains the conservative default on this Pi if symptoms recur, but there's no longer a blanket reason to avoid `@`/`.`.
 - **Do not overwrite `/lib/firmware/brcm/brcmfmac43455-sdio.raspberrypi,4-model-b.txt`.** This is the NVRAM blob that `brcmfmac` loads into the chip at probe time — a stray `echo something > file` or a misfired script that truncates it to a few bytes leaves the chip uninitialised, `dmesg` shows `brcmfmac: brcmf_sdio_htclk: HT Avail timeout (1000000): clkctl 0x50`, and `iw dev` is empty. No amount of `reboot`/`rmmod brcmfmac`/power-cycle recovers it, because the file content is wrong on disk. Fix: `wget -O <path> https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bookworm/debian/config/brcm80211/brcm/brcmfmac43455-sdio.txt` (this is the upstream source used by the `brcmfmac-nvram-43455-sdio` apk in OpenWrt). Note that `apk fix` / `apk add --reinstall` do **not** restore the file — OpenWrt's apk-tools build does not implement `--reinstall`, and `apk fix` no-ops if the package DB thinks the file is fine. Direct `wget` is the reliable path.
 
 ### PSU
@@ -175,7 +175,7 @@ uci set wireless.radio0.htmode='HT20'
 uci set wireless.radio0.country='RU'          # passed to hostapd as metadata; phy0 itself reports country 99 because brcmfmac wiphy is self-managed — harmless
 uci set wireless.radio0.legacy_rates='1'
 uci set wireless.radio0.disabled='0'
-uci set wireless.default_radio0.ssid='piwrt'  # ASCII only — see hostapd/ssid2 caveat above
+uci set wireless.default_radio0.ssid='piwrt'  # see hostapd/ssid2 caveat above; @/. now known to be fine in practice
 uci set wireless.default_radio0.hidden='0'    # optional; 'hidden 1' works, but clients see the AP faster when broadcast
 uci set wireless.default_radio0.encryption='sae-mixed'  # WPA3-SAE with WPA2-PSK fallback for older clients
 uci set wireless.default_radio0.wps_pushbutton='0'      # disable WPS — PIN brute-force is a known vector
@@ -499,7 +499,7 @@ Per-interface byte counters persist across reboots. Inspect with `vnstat --inter
 - Samsung 990 EVO on RPi5 → swap the SSD
 - `nvme_core.default_ps_max_latency_us=0` in `/boot/cmdline.txt` → add to `/etc/sysupgrade.conf` too
 - brcmfmac ACS unsupported → fix channel; 2.4 GHz AP-mode brittle → prefer 5 GHz
-- SSID with `@`/`.` → hostapd uses `ssid2=`, breaks macOS/Switch → ASCII only
+- ~~SSID with `@`/`.` → hostapd uses `ssid2=`, breaks macOS/Switch → ASCII only~~ (retracted 2026-05-14 — re-test on Hopper showed clients associate fine with `ssid2="quoted"` form; original Pi symptom likely BCM-specific or misdiagnosed)
 - 25.x uses apk, not opkg → `apk add --allow-untrusted <file.apk>`
 - AWG UCI keys need `awg_` prefix (`awg_jc`, `awg_s1`, `awg_h1` …)
 - Package is `luci-proto-amneziawg`, not `luci-app-amneziawg`
