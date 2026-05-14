@@ -36,8 +36,14 @@ wait_for_wan() {
 
 wait_for_wan || exit 1
 
+# apk update is a soft requirement — packages we want to install/check are
+# already on disk after sysupgrade (or were never wiped on a plain reboot).
+# Refreshing the index lets `apk add` pick up newer versions if any, but
+# failure here is recoverable: the apk-add steps below operate on whatever
+# index is cached. Common failure mode is a transient HTTPS hiccup
+# immediately after wwan-only boot, before routing fully settles.
 log "apk update"
-apk update >/dev/null 2>&1 || { log "apk update failed"; exit 1; }
+apk update >/dev/null 2>&1 || log "apk update failed (continuing with cached index)"
 
 # Modem stack — RNDIS/CDC-Ether enumeration for Huawei E3372 HiLink.
 log "ensuring modem packages"

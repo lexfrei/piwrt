@@ -247,6 +247,12 @@ mkdir -p /etc/nftables.d
 cp configs/nftables/50-allow-domains.nft /etc/nftables.d/
 cp configs/nftables/60-mobile-ttl.nft    /etc/nftables.d/
 
+# IMPORTANT: configs/https-dns-proxy uses `resolver_url
+# 'https://1.1.1.1/dns-query'` (IP literal, not the hostname
+# 'cloudflare-dns.com'). DO NOT change to a hostname — see the
+# "RU operator CGNAT blocks plain DNS" section under Mobile-specific
+# quirks for the deadlock the hostname form creates on cellular WAN.
+
 # Hotplug script (ECMP-aware split-VPN router)
 mkdir -p /etc/hotplug.d/iface
 cp configs/hotplug.d/iface/90-split-vpn /etc/hotplug.d/iface/
