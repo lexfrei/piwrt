@@ -1,0 +1,28 @@
+# /etc/config/https-dns-proxy — DoH listener on 127.0.0.1:5053.
+#
+# Bootstrap DNS (1.1.1.1, 1.0.0.1) is contacted ONLY to resolve the DoH
+# resolver hostname itself (cloudflare-dns.com), and since 1.1.1.1 is an
+# IP literal, that resolution actually does nothing — the proxy connects
+# straight to 1.1.1.1 over TLS to cloudflare-dns.com.
+#
+# After the tunnel is up, the proxy's outbound TLS to Cloudflare rides
+# through awg0 like everything else (since awg0 is the default route).
+# That keeps the DoH stream out of the operator's view.
+#
+# `update_dnsmasq_config '0'` — we don't want this package modifying
+# /etc/config/dhcp on its own. The dnsmasq upstream is statically
+# declared (see configs/dhcp -> `list server '127.0.0.1#5053'`).
+
+config main 'config'
+	option update_dnsmasq_config '0'
+	option force_dns '0'
+	option canary_domains_icloud '1'
+	option canary_domains_mozilla '1'
+
+config https-dns-proxy
+	option bootstrap_dns '1.1.1.1,1.0.0.1'
+	option resolver_url 'https://cloudflare-dns.com/dns-query'
+	option listen_addr '127.0.0.1'
+	option listen_port '5053'
+	option user 'nobody'
+	option group 'nogroup'

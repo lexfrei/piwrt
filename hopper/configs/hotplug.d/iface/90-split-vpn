@@ -1,0 +1,100 @@
+#!/bin/sh
+# /etc/hotplug.d/iface/90-split-vpn
+#
+# Maintains the split-VPN bypass routing across the "WAN group" (wan + wwan).
+# Traffic destined to nft set allow_domains_v4 gets fwmark 0x100 and is
+# routed through table 100. This script rebuilds table 100 on every iface
+# up/down event, producing:
+#
+#   - ECMP multipath default when both wan and wwan are up (per-flow hash)
+#   - single-nexthop default when only one is up
+#   - empty table (no leak) when none is up
+#
+# The Russian-only resolver (77.88.8.8) is pinned to the same WAN group
+# in main table so dnsmasq does not leak its lookup through the AWG tunnel.
+#
+# Requires `ip-full` — BusyBox's ip applet does NOT implement multipath
+# and silently fails the `nexthop via X dev Y weight N` syntax. Without
+# ip-full, the single-nexthop branch still works, but the dual branch
+# leaves table 100 empty. post-upgrade.sh installs ip-full unconditionally.
+
+WAN_IFACES='wan wwan'
+TABLE_ID=100
+FWMARK='0x100'
+RULE_PREF=100
+RU_RESOLVER='77.88.8.8'
+
+in_wan_group=0
+for i in $WAN_IFACES; do
+	[ "$INTERFACE" = "$i" ] && in_wan_group=1 && break
+done
+[ "$in_wan_group" = '1' ] || exit 0
+
+# Echo "<gw> <dev>" lines for every WAN that is up and has a gateway.
+list_up_wans() {
+	for iface in $WAN_IFACES; do
+		status=$(ifstatus "$iface" 2>/dev/null)
+		[ -z "$status" ] && continue
+		[ "$(echo "$status" | jsonfilter -e '@.up' 2>/dev/null)" = 'true' ] || continue
+		gw=$(echo "$status" | jsonfilter -e '@.route[0].nexthop' 2>/dev/null)
+		dev=$(echo "$status" | jsonfilter -e '@.l3_device' 2>/dev/null)
+		[ -n "$gw" ] && [ -n "$dev" ] || continue
+		echo "$gw $dev"
+	done
+}
+
+apply_ecmp_routes() {
+	# Collect "<gw>,<dev>" pairs into a single string for safe ash parsing.
+	wans=''
+	count=0
+	while read -r gw dev; do
+		[ -z "$gw" ] && continue
+		wans="$wans $gw,$dev"
+		count=$((count + 1))
+	done
+
+	ip rule del fwmark "$FWMARK" lookup "$TABLE_ID" 2>/dev/null
+	ip rule add fwmark "$FWMARK" lookup "$TABLE_ID" pref "$RULE_PREF"
+	ip route flush table "$TABLE_ID" 2>/dev/null
+	ip route del "$RU_RESOLVER/32" 2>/dev/null
+
+	case "$count" in
+		0)
+			logger -t split-vpn "$ACTION $INTERFACE: no active WAN; table $TABLE_ID + $RU_RESOLVER cleared"
+			return
+			;;
+		1)
+			# Single-nexthop: iproute2 rejects `nexthop` keyword with a
+			# single entry. Must be the regular `via X dev Y` form.
+			set -- $(echo "$wans" | tr ',' ' ')
+			gw="$1"; dev="$2"
+			ip route add default via "$gw" dev "$dev" table "$TABLE_ID"
+			ip route add "$RU_RESOLVER/32" via "$gw" dev "$dev"
+			;;
+		*)
+			# 2+ WANs up: ECMP multipath. iproute2-full required — BusyBox
+			# ip applet does not implement nexthop syntax.
+			nexthops=''
+			for pair in $wans; do
+				pgw=${pair%,*}
+				pdev=${pair#*,}
+				nexthops="$nexthops nexthop via $pgw dev $pdev weight 1"
+			done
+			# iproute2-full requires `table N` BEFORE the nexthop chain.
+			eval ip route add table "$TABLE_ID" default $nexthops
+			eval ip route add "$RU_RESOLVER/32" $nexthops
+			;;
+	esac
+	logger -t split-vpn "$ACTION $INTERFACE: rebuilt table $TABLE_ID + $RU_RESOLVER across $count WAN(s)"
+}
+
+case "$ACTION" in
+	ifup|ifupdate)
+		sleep 2   # wait for netifd to install routes
+		list_up_wans | apply_ecmp_routes
+		;;
+	ifdown)
+		sleep 1
+		list_up_wans | apply_ecmp_routes
+		;;
+esac

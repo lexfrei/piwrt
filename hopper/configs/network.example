@@ -1,0 +1,98 @@
+# Example /etc/config/network for Netcraze Hopper (NC-3811).
+# Replace every <PLACEHOLDER> with real values from your AWG .conf and
+# your wireless config. Never commit the populated file with private keys.
+#
+# Architecture:
+#   - lan      192.168.1.0/24 on br-lan (lan1+lan2+lan3 switch ports + radio AP)
+#   - wan      ethernet uplink (DHCP, metric 10)
+#   - wan6     ethernet v6 (DHCPv6, metric 10)
+#   - wwan     USB modem (Huawei E3372 HiLink RNDIS on eth1, DHCP, metric 20)
+#   - awg0     AmneziaWG v2 tunnel (default route, kill switch)
+#
+# AWG obfuscation params use the awg_ prefix on the interface section
+# (awg_jc, awg_jmin, awg_jmax, awg_s1..awg_s4, awg_h1..awg_h4, optional
+# awg_i1..awg_i5). Without the prefix /lib/netifd/proto/amneziawg.sh
+# silently falls back to defaults and the server drops every packet.
+#
+# IMPORTANT: do NOT set `option mtu '1280'` on the lan section. It causes
+# DEVICE_CLAIM_FAILED on br-lan because the wireless ports are 1500 and a
+# bridge cannot span mixed MTUs. Announce MTU 1280 to clients via DHCP
+# option 26 instead — see configs/dhcp.
+
+config interface 'loopback'
+	option device 'lo'
+	option proto 'static'
+	option ipaddr '127.0.0.1'
+	option netmask '255.0.0.0'
+
+config globals 'globals'
+	option ula_prefix 'fd00:abcd:1234::/48'
+
+config device
+	option name 'br-lan'
+	option type 'bridge'
+	list ports 'lan1'
+	list ports 'lan2'
+	list ports 'lan3'
+
+config interface 'lan'
+	option device 'br-lan'
+	option proto 'static'
+	option ipaddr '192.168.1.1'
+	option netmask '255.255.255.0'
+	option ip6assign '60'
+
+config interface 'wan'
+	option device 'wan'
+	option proto 'dhcp'
+	option metric '10'
+
+config interface 'wan6'
+	option device 'wan'
+	option proto 'dhcpv6'
+	option metric '10'
+
+# Huawei E3372 HiLink RNDIS — comes up as eth1 after usb-modeswitch swaps
+# the modem out of CD-ROM mode (PID 12d1:1f01 -> 12d1:14db).
+config interface 'wwan'
+	option device 'eth1'
+	option proto 'dhcp'
+	option metric '20'
+	option defaultroute '1'
+
+config interface 'awg0'
+	option proto 'amneziawg'
+	option private_key '<CLIENT_PRIVATE_KEY>'
+	option mtu '1280'
+	list addresses '<10.x.x.x/32>'
+	list addresses '<IPV6_ADDRESS/128>'
+	# AWG v2 obfuscation parameters — copy from your [Interface] section.
+	# Values that span ranges (e.g. H1 '168781656-175897653') are passed
+	# as-is, the proto handler forwards them to `awg setconf` literally.
+	option awg_jc '<JC>'
+	option awg_jmin '<JMIN>'
+	option awg_jmax '<JMAX>'
+	option awg_s1 '<S1>'
+	option awg_s2 '<S2>'
+	option awg_s3 '<S3>'
+	option awg_s4 '<S4>'
+	option awg_h1 '<H1>'
+	option awg_h2 '<H2>'
+	option awg_h3 '<H3>'
+	option awg_h4 '<H4>'
+	# Uncomment if your .conf has I1..I5
+	# option awg_i1 '<I1>'
+	# option awg_i2 '<I2>'
+	# option awg_i3 '<I3>'
+	# option awg_i4 '<I4>'
+	# option awg_i5 '<I5>'
+
+config amneziawg_awg0
+	option public_key '<SERVER_PUBLIC_KEY>'
+	# option preshared_key '<PRESHARED_KEY>'   # if your conf has one
+	option endpoint_host '<SERVER_HOSTNAME>'
+	option endpoint_port '<SERVER_PORT>'
+	option persistent_keepalive '30'
+	option route_allowed_ips '1'
+	list allowed_ips '0.0.0.0/0'
+	list allowed_ips '::/0'

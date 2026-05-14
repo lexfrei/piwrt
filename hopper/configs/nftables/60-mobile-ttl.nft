@@ -1,0 +1,26 @@
+# /etc/nftables.d/60-mobile-ttl.nft
+#
+# Tethering bypass for the Huawei E3372 HiLink modem. The modem in HiLink
+# mode is a NAT-router (its own 192.168.8.0/24 with 192.168.8.1 as
+# gateway), not a USB-Ethernet bridge — and it DECREMENTS TTL on egress
+# to the LTE WAN.
+#
+# Default TTL chain without this rule:
+#   LAN client (Linux)      sends TTL=64
+#   Hopper forwards, decrements -> 63
+#   Modem forwards, decrements  -> 62
+#   Operator sees TTL=62 -> "this is not a phone, that's tethering"
+#
+# Russian operators (MTS, MegaFon, Beeline, Yota) actively detect
+# tethering by TTL and apply throttling, forced tariff change, or full
+# block. To make the operator see TTL=64 (phone-native), egress from
+# Hopper to eth1 must be set to 65 — the modem decrements to 64.
+#
+# The rule applies only to egress through eth1, so the ethernet WAN path
+# (where no operator-side tethering detection exists) is untouched.
+
+chain mangle_postrouting_mobile {
+	type filter hook postrouting priority mangle; policy accept;
+	oifname "eth1" ip  ttl       set 65
+	oifname "eth1" ip6 hoplimit  set 65
+}

@@ -1,0 +1,54 @@
+# Example /etc/config/wireless for Netcraze Hopper (MediaTek MT7976CN).
+#
+# MT7976CN is a dual-band Wi-Fi 6 (802.11ax) chip exposed as two phys:
+#   radio0 -> phy0 -> 2.4 GHz band  (HE20 / HT20)
+#   radio1 -> phy1 -> 5 GHz band    (HE80 / VHT80)
+#
+# Same SSID on both bands enables client-side band steering. Unlike the
+# BCM43455 on the Pi, mt76 supports ACS, so 'auto' channel works on both
+# radios. No `legacy_rates`, no `country 'RU'` channel restrictions
+# beyond what the regulatory domain already enforces.
+#
+# Note on SSID with @ or .: OpenWrt's hostapd has utf8_ssid=1 by default
+# and emits `ssid2="..."` (quoted-string form) instead of `ssid=`. On the
+# BCM43455 piwrt setup this broke macOS / Nintendo Switch association.
+# On MT7976 the same emission was observed but the author reports clients
+# associate fine — apparently the BCM-era issue was a chip-specific quirk,
+# not a generic hostapd problem. Test with your client before betting on
+# it; fall back to plain ASCII if you see silent association failures.
+
+config wifi-device 'radio0'
+	option type 'mac80211'
+	option path 'platform/soc/18000000.wifi'
+	option band '2g'
+	option channel 'auto'
+	option htmode 'HE20'
+	option country 'RU'
+	option disabled '0'
+
+config wifi-iface 'default_radio0'
+	option device 'radio0'
+	option network 'lan'
+	option mode 'ap'
+	option ssid '<YOUR_SSID>'
+	option hidden '0'
+	option encryption 'psk2'
+	option key '<WIFI_PASSWORD_MIN_8_CHARS>'
+
+config wifi-device 'radio1'
+	option type 'mac80211'
+	option path 'platform/soc/18000000.wifi+1'
+	option band '5g'
+	option channel 'auto'
+	option htmode 'HE80'
+	option country 'RU'
+	option disabled '0'
+
+config wifi-iface 'default_radio1'
+	option device 'radio1'
+	option network 'lan'
+	option mode 'ap'
+	option ssid '<YOUR_SSID>'
+	option hidden '0'
+	option encryption 'psk2'
+	option key '<WIFI_PASSWORD_MIN_8_CHARS>'

@@ -1,0 +1,42 @@
+#!/bin/sh
+# /usr/bin/wifi-watchdog — bring Wi-Fi back if either AP interface has
+# disappeared.
+#
+# Adapted from the Pi version for MediaTek MT7976. Two phys instead of one
+# (phy0 = 2.4 GHz, phy1 = 5 GHz), so we check both AP interfaces. The
+# driver-reload escalation is mt7915e instead of brcmfmac.
+#
+# The MT7976 has not been observed entering the RX-deaf state that the
+# BCM43455 was prone to — so on the Hopper this script is largely
+# pre-emptive. Worth keeping cheap (5-minute cron tick) as insurance
+# against future firmware bugs, but if it never logs anything across
+# multiple months, it can be safely deleted.
+#
+# Skip the first 90 seconds — wifi-scripts and netifd are still racing
+# during early boot, and a watchdog kick now just doubles the noise.
+
+[ "$(cut -d. -f1 /proc/uptime)" -lt 90 ] && exit 0
+
+missing=0
+for ap in phy0-ap0 phy1-ap0; do
+	iw dev "$ap" info >/dev/null 2>&1 || missing=1
+done
+
+[ "$missing" = '0' ] && exit 0
+
+logger -t wifi-watchdog "AP iface missing, running 'wifi up'"
+wifi up
+sleep 8
+
+missing=0
+for ap in phy0-ap0 phy1-ap0; do
+	iw dev "$ap" info >/dev/null 2>&1 || missing=1
+done
+[ "$missing" = '0' ] && exit 0
+
+logger -t wifi-watchdog "still missing, reloading mt7915e"
+rmmod mt7915e 2>/dev/null
+sleep 2
+modprobe mt7915e
+sleep 6
+wifi up

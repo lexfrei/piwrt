@@ -1,0 +1,42 @@
+# Template for /etc/amneziawg/awg0.conf
+# Replace every <PLACEHOLDER> with the real value from your AmneziaWG v2
+# client config. Do NOT commit a filled-in version to git.
+#
+# This is the same template as the Pi setup — AWG v2 is hardware-agnostic.
+# Use it to keep a non-UCI copy of the secrets in /etc/amneziawg/awg0.conf,
+# while configs/network references the same values via UCI options.
+
+[Interface]
+PrivateKey = <CLIENT_PRIVATE_KEY>
+Address = <10.x.x.2/32>
+DNS = <AWG_DNS_IP>
+MTU = 1280
+
+# AmneziaWG v2 obfuscation parameters. All of these come from the server
+# config; both sides must match or the handshake fails. Some servers use
+# range values for H1..H4 (e.g. "168781656-175897653") — pass them as
+# literal strings, the client picks per-packet within the range.
+Jc = <JC>
+Jmin = <JMIN>
+Jmax = <JMAX>
+S1 = <S1>
+S2 = <S2>
+S3 = <S3>
+S4 = <S4>
+H1 = <H1>
+H2 = <H2>
+H3 = <H3>
+H4 = <H4>
+# Optional — only set if your server config carries them.
+# I1 = <I1>
+# I2 = <I2>
+# I3 = <I3>
+# I4 = <I4>
+# I5 = <I5>
+
+[Peer]
+PublicKey = <SERVER_PUBLIC_KEY>
+# PresharedKey = <PRESHARED_KEY>   # only if your conf has one
+AllowedIPs = 0.0.0.0/0, ::/0
+Endpoint = <SERVER_HOSTNAME>:<SERVER_PORT>
+PersistentKeepalive = 30

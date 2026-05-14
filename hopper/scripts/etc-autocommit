@@ -1,0 +1,20 @@
+#!/bin/sh
+# /usr/bin/etc-autocommit — commit any drift in /etc on a schedule.
+#
+# Run hourly from cron (`30 * * * * /usr/bin/etc-autocommit`). Idempotent:
+# `git commit` on a clean tree exits non-zero, we ignore that.
+#
+# This is the lightweight alternative to etckeeper (which is not packaged
+# for OpenWrt's apk repository). Without package-manager hooks the timing
+# is less precise — drift gets committed within an hour of being made —
+# but for a tiny home router that's fine.
+#
+# Initial setup once after installing git (see hopper/README.md, "Track
+# changes to /etc" section). After that this script is just a maintainer.
+
+cd /etc || exit 1
+git add -A
+if ! git diff --cached --quiet; then
+	git -c commit.gpgsign=false commit -m "auto $(date -u +%Y-%m-%dT%H:%M:%SZ)" >/dev/null 2>&1 && \
+		logger -t etc-autocommit "committed /etc drift"
+fi

@@ -1,0 +1,17 @@
+# /etc/rc.local additions
+#
+# Append this block to /etc/rc.local on the router, before the final
+# `exit 0`. Idempotent — when there is nothing to do, returns immediately,
+# so re-running the file is safe.
+#
+# Unlike the Pi setup there is no active-cooler fan tuning here — the
+# MT7981 SoC on the Hopper runs cool enough with its stock heatsink that
+# the chassis stays warm-but-not-hot under load.
+
+# piwrt-rclocal: full post-upgrade hook (idempotent re-install + service kick).
+# Runs the install of every package piwrt-on-Hopper needs but the OpenWrt
+# squashfs base image doesn't ship. Costs ~1 second of apk metadata work
+# in the steady state, ~60 seconds end-to-end on the first boot after
+# sysupgrade. Backgrounded so boot is not held up.
+[ -x /usr/share/piwrt/post-upgrade.sh ] && \
+	(sh /usr/share/piwrt/post-upgrade.sh > /tmp/piwrt-post-upgrade.log 2>&1 &)
