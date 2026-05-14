@@ -45,6 +45,14 @@ wait_for_wan || exit 1
 log "apk update"
 apk update >/dev/null 2>&1 || log "apk update failed (continuing with cached index)"
 
+# libustream-mbedtls — provides TLS for OpenWrt's full wget. The LuCI
+# cleanup pulls this in via dependency chain on first install, but a
+# fresh sysupgrade doesn't keep it. Without it `wget https://...` fails
+# with "SSL support not available", which breaks AWG package re-download
+# and any other HTTPS curl/wget operation from the router.
+log "ensuring libustream-mbedtls (HTTPS for wget)"
+apk add libustream-mbedtls >/dev/null 2>&1 || true
+
 # Modem stack — RNDIS/CDC-Ether enumeration for Huawei E3372 HiLink.
 log "ensuring modem packages"
 apk add usb-modeswitch \
@@ -72,6 +80,11 @@ fi
 # headless (no web UI), all admin via SSH/UCI.
 log "ensuring https-dns-proxy"
 apk add https-dns-proxy >/dev/null 2>&1 || true
+
+# vnstat2 — traffic accounting for wan / eth1 / awg0. Database in
+# /var/lib/vnstat/ is preserved across sysupgrade via sysupgrade.conf.
+log "ensuring vnstat2"
+apk add vnstat2 >/dev/null 2>&1 || true
 
 # AmneziaWG — kmod tied to a specific kernel ABI, so re-download every time.
 if ! awg --version >/dev/null 2>&1; then
