@@ -1,0 +1,21 @@
+# /etc/config/dropbear — SSH server, key-only authentication.
+#
+# Both PasswordAuth and RootPasswordAuth set to 'off'. The router has no
+# password fallback — log in with the key listed in
+# /etc/dropbear/authorized_keys or there's no way in short of a sysupgrade
+# / factory reset.
+#
+# Before flipping passwords off, **ensure your pubkey works**. Test once
+# with `ssh -o PasswordAuthentication=no root@router`. If it greets you,
+# you're safe to commit.
+#
+# Combined with the firewall SSH-WAN rule (see configs/firewall), this
+# exposes 22/tcp on both the ethernet WAN and the LTE wwan zone. Cellular
+# operators NAT incoming, so the wwan exposure is mostly theoretical
+# unless reached via a reverse tunnel or Tailscale.
+
+config dropbear 'main'
+	option enable '1'
+	option Port '22'
+	option PasswordAuth 'off'
+	option RootPasswordAuth 'off'

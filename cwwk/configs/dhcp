@@ -1,0 +1,74 @@
+# /etc/config/dhcp — dnsmasq-full with nftset for split-VPN and DoH
+# upstream pinned to https-dns-proxy on 127.0.0.1:5053.
+#
+# Why dnsmasq-full: base dnsmasq is built without nftset support, so the
+# split-VPN bypass nftset=/domain/... directives in /etc/dnsmasq.d/
+# silently no-op. dnsmasq-full ships with --with-nftset.
+#
+# Why `list server '127.0.0.1#5053'` here even when https-dns-proxy
+# normally injects it: without an upstream the very first boot has a
+# chicken-and-egg situation — AWG cannot resolve its endpoint hostname
+# because dnsmasq has nothing to forward to. Having a static line here
+# means DNS works the moment https-dns-proxy comes up, even if the UCI
+# injection hook hasn't run yet.
+#
+# `option noresolv '1'` blocks dnsmasq from reading /tmp/resolv.conf.d/*
+# (which would point at the upstream router's DNS) — that's the DNS-leak
+# kill switch. The only allowed upstream is whatever 127.0.0.1#5053 sends,
+# which is DoH through the tunnel.
+#
+# DHCP option 26 announces MTU 1280 to LAN clients, matching the AWG
+# tunnel MTU. This avoids fragmentation failures (classic Nintendo Switch
+# 2124-8006) without touching the br-lan MTU itself.
+#
+# Split-VPN: `option confdir '/etc/dnsmasq.d'` lets dnsmasq auto-load
+# additional files placed there. scripts/update-bypass-list.sh writes
+# /etc/dnsmasq.d/allow-domains.conf with `nftset=/domain/4#inet#fw4#...`
+# and `server=/domain/77.88.8.8` directives for each Russian bypass
+# domain.
+
+config dnsmasq
+	option domainneeded '1'
+	option localise_queries '1'
+	option rebind_protection '1'
+	option rebind_localhost '1'
+	option local '/lan/'
+	option domain 'lan'
+	option expandhosts '1'
+	option cachesize '1000'
+	option authoritative '1'
+	option readethers '1'
+	option leasefile '/tmp/dhcp.leases'
+	option resolvfile '/tmp/resolv.conf.d/resolv.conf.auto'
+	option localservice '1'
+	option ednspacket_max '1232'
+	option noresolv '1'
+	option confdir '/etc/dnsmasq.d'
+	list server '127.0.0.1#5053'
+
+config dhcp 'lan'
+	option interface 'lan'
+	option start '100'
+	option limit '150'
+	option leasetime '12h'
+	option dhcpv4 'server'
+	option dhcpv6 'server'
+	option ra 'server'
+	list ra_flags 'managed-config'
+	list ra_flags 'other-config'
+	# MTU announcement to clients (matches AWG tunnel MTU)
+	list dhcp_option '26,1280'
+
+config dhcp 'wan'
+	option interface 'wan'
+	option ignore '1'
+
+config dhcp 'wwan'
+	option interface 'wwan'
+	option ignore '1'
+
+config odhcpd 'odhcpd'
+	option maindhcp '0'
+	option leasefile '/tmp/hosts/odhcpd'
+	option leasetrigger '/usr/sbin/odhcpd-update'
+	option loglevel '4'

@@ -1,0 +1,30 @@
+#!/bin/sh
+# /usr/bin/awg-watchdog — restart awg0 if the last handshake is stale.
+#
+# Same as the Pi version — AWG keepalive is 30s, the threshold here (180s)
+# is "we missed six keepalives in a row, the tunnel is dead enough to
+# bounce". Run from cron every 2 minutes (see crontab in README).
+#
+# Skip on fresh boot — NTP needs ~30 s to bring system time into sync, and
+# `awg show ... latest-handshakes` returns absolute UNIX time. If our clock
+# is wrong, age will look bogus (seen as "17 days ago" immediately after
+# reboot), and the watchdog would tear down a perfectly healthy tunnel.
+#
+# On the Hopper this also doubles as the dual-WAN failover trigger: when
+# the active WAN dies, AWG endpoint route becomes unreachable, handshakes
+# stop, watchdog tears down awg0, ifup awg0 re-resolves the endpoint
+# through whichever WAN is still up (lower metric wins).
+
+[ "$(cut -d. -f1 /proc/uptime)" -lt 90 ] && exit 0
+
+last=$(awg show awg0 latest-handshakes 2>/dev/null | awk '{print $2}')
+[ -z "$last" ] && last=0
+now=$(date +%s)
+age=$((now - last))
+
+if [ "$age" -gt 180 ]; then
+	logger -t awg-watchdog "stale handshake age=${age}s, restarting awg0"
+	ifdown awg0
+	sleep 2
+	ifup awg0
+fi
