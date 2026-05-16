@@ -1,0 +1,104 @@
+# /etc/config/firewall — full-tunnel + kill switch with split-VPN bypass.
+# Same architecture as the Hopper config, minus the LTE wwan zone member —
+# this box has no cellular backup. If you add a second wired uplink for
+# failover, list it on the wan zone (`list network 'wan2'`) and add its
+# interface to WAN_IFACES in /etc/hotplug.d/iface/90-split-vpn; the rest
+# of the firewall config picks it up automatically.
+#
+# Zone 'wan' includes wan + wan6: from the firewall's perspective they
+# are all "uplinks". The split-VPN bypass and kill-switch rules refer
+# to this zone, so adding/removing physical uplinks is a one-line
+# `list network` change.
+#
+# There is NO blanket `config forwarding lan -> wan` — so by default
+# clients cannot leak through any upstream if awg0 is down (kill switch
+# intact). Split-tunnel traffic is allowed via a targeted rule that only
+# accepts forward from lan to wan when the packet carries fwmark 0x100.
+# That mark is set by 50-allow-domains.nft on packets destined to IPs in
+# the allow_domains_v4/v6 nft sets (populated by dnsmasq-full from
+# /etc/dnsmasq.d/allow-domains.conf).
+#
+# SSH-WAN rule allows administering the router from the WAN side (i.e.
+# upstream LAN through ethernet wan). Useful when the router is mounted
+# remotely and you want admin access without joining its LAN. Keep
+# permanently if the upstream LAN is trusted (behind your own router);
+# remove if the WAN is hostile.
+
+config defaults
+	option input 'REJECT'
+	option output 'ACCEPT'
+	option forward 'REJECT'
+	option synflood_protect '1'
+
+config zone
+	option name 'lan'
+	list network 'lan'
+	option input 'ACCEPT'
+	option output 'ACCEPT'
+	option forward 'REJECT'
+
+config zone
+	option name 'wan'
+	list network 'wan'
+	list network 'wan6'
+	option input 'REJECT'
+	option output 'ACCEPT'
+	option forward 'REJECT'
+	option masq '1'
+	option mtu_fix '1'
+
+config zone
+	option name 'awg'
+	list network 'awg0'
+	option input 'REJECT'
+	option output 'ACCEPT'
+	option forward 'REJECT'
+	option masq '1'
+	option mtu_fix '1'
+
+# Only allow forwarding from LAN into the tunnel. This is the kill switch:
+# without a lan -> wan rule, clients cannot leak through the upstream link
+# if awg0 is down.
+config forwarding
+	option src 'lan'
+	option dest 'awg'
+
+config rule
+	option name 'Allow-DHCP'
+	option src 'lan'
+	option proto 'udp'
+	option dest_port '67-68'
+	option target 'ACCEPT'
+
+config rule
+	option name 'Allow-DNS'
+	option src 'lan'
+	option proto 'tcp udp'
+	option dest_port '53'
+	option target 'ACCEPT'
+
+config rule
+	option name 'Allow-Ping-LAN'
+	option src 'lan'
+	option proto 'icmp'
+	option target 'ACCEPT'
+
+# Admin SSH from the WAN side. Lock down with a source IP whitelist if
+# the upstream segment is not fully trusted.
+config rule
+	option name 'SSH-WAN'
+	option src 'wan'
+	option proto 'tcp'
+	option dest_port '22'
+	option target 'ACCEPT'
+
+# Split-VPN: accept lan -> wan forward only when the packet carries
+# fwmark 0x100 (set by 50-allow-domains.nft on bypass-listed destinations).
+# Without this rule, split-tunnel traffic would be dropped by the default
+# forward REJECT policy. Non-marked traffic is still blocked → kill switch.
+config rule
+	option name 'Split-VPN-bypass'
+	option src 'lan'
+	option dest 'wan'
+	option mark '0x100/0x100'
+	option target 'ACCEPT'
