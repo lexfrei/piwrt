@@ -70,26 +70,97 @@ Wi-Fi is not provisioned in this setup regardless of what the slot can take — 
 
 ### Fan / acoustic noise
 
-A single chassis fan, proprietary form factor — bladewheel screwed directly into the heatsink, no standard 40×40 frame. **The cable is 4-pin**, so the fan itself is PWM-capable. Out of the box it runs at fixed full speed and is the dominant source of acoustic noise.
+Single chassis fan on the CW-AL-(2L+SFP_4L) board. Two 4-pin headers on the PCB labelled **`CPU_FAN0`** and **`CPU_FAN1`** per silkscreen; only `CPU_FAN0` is populated from the factory. Fan cable to the motor body has four conductors (visually confirmed). The fan runs at fixed full speed out of the box and is the dominant source of acoustic noise.
 
-**Linux-side PWM control does not work on this board, but the chip IS identified.** Empirical findings:
+#### What the chip is
 
-- SuperIO chip identified by `sensors-detect` (lm-sensors 3.6.2 package): **`ITE IT8625E`** at ISA address **`0xa20`** (confidence 9/9). The chip responds to standard SuperIO probe at port `0x2e` from userspace via `iopl(3)`, and `sensors-detect` reads its EC base address (`0xa20`) from the SuperIO config registers.
-- Mainline kernel `it87` driver supports IT8625E (added upstream ~2020). The driver loads successfully with `force_id=0x8625 ignore_resource_conflict=1`, but **`__init` returns silently without registering any hwmon device** — no diagnostic in `dmesg`.
-- **Root cause: `/proc/ioports` shows `0a20-0a2f : pnp 00:00`** — the EC port range is claimed by ACPI's motherboard PnP pseudo-device. Kernel `request_muxed_region(0xa20, 0x10)` returns NULL because of the conflict, the driver bails out of probe. `ignore_resource_conflict=1` was supposed to bypass this, but in the OpenWrt 25.12 kernel 6.12.87 build the parameter doesn't fully take effect (kernel-side resource tracking still wins).
-- `acpi_enforce_resources=lax` on kernel cmdline didn't help either — that flag relaxes ACPI's own reservation enforcement, but the explicit PnP 00:00 claim is a separate mechanism.
-- The `nct6775` driver was also tried (in case the chip was a Nuvoton): no, it's ITE.
-- DMI returns `"Default string"` for manufacturer/board, so board-specific kernel quirks lookup is impossible (e.g. DMI-based `dmi_check_system` table additions wouldn't fire on this hardware).
-- ACPI exposes 5 `cooling_device*` entries of `type=Fan` with `max_state=1` — binary on/off only, no PWM duty cycle surface. All read `cur_state=0` while the physical fan spins at full speed — fan is BIOS/EC out-of-band, ACPI cooling_device is decorative.
+`sensors-detect` (lm-sensors 3.6.2) identifies the SuperIO as **ITE IT8625E rev 12** at ISA base **`0xa20`** (confidence 9/9). `isadump -k 0x87,0x01,0x55,0x55 0x2e 0x2f 4` confirms LDN 4 (Environmental Monitor) is active with EC base `0a 20` and secondary base `0a 10`:
 
-Conclusion: the chip is reachable from **userspace** via direct `iopl(3) + outb/inb`, but no kernel hwmon device is exposed. To get OS-side PWM control without rewriting kernel resource tracking, one of:
+```text
+LDN 4: active=01  base=0a 20  secondary=0a 10
+```
 
-1. **Build `frankcrawford/it87` out-of-tree** (the maintained fork that explicitly supports IT8625E). Requires OpenWrt SDK 25.12 for kernel 6.12.87 + cross-compile + DKMS-style packaging. May handle the PnP conflict differently than mainline. Not exercised in this build.
-2. **Userspace fan-control daemon** that talks directly to IT8625E EC registers at `0xa20` via `iopl(3)`. ~200 lines of C, exists in some community projects (typically targeted at gaming-motherboard tuning utilities). Bypasses kernel hwmon entirely.
-3. **Hand-patch kernel** to drop the PnP 00:00 reservation on `0xa20` (custom `acpi_osi=` / `pnp_reserve_io=` boot arguments). Highly hardware-specific, fragile across BIOS updates.
-4. **Leave BIOS Smart Fan in charge** — IT8625E understands a PWM curve managed by BIOS, and the AMI Aptio setup screen exposes it. This was the path taken on this build. The kernel side never sees the PWM, but doesn't need to.
+#### Mainline Linux `it87` driver does not support IT8625E
 
-**Empirical thermal headroom** — `stress-ng --cpu 8 --vm 1 --vm-bytes 256M --timeout 300s` against N305 with the stock fan running, package and core temps as measured via `coretemp`:
+The kernel hwmon `it87` driver in mainline Linux (verified against `v6.12` and current `master`) lists IT8603E, IT8620E, IT8622E, IT8623E, IT8628E, IT87952E and many other ITE parts — but not IT8625E. [Patch v2 `hwmon: (it87) Add support for IT8625E`](https://lore.kernel.org/lkml/b6c2731b-8fac-4e7a-ab0c-2f36e8a64a69@roeck-us.net/T/) (Ai Chao, Oct 2024 for Centerm P410) tried to alias IT8625E to the IT8628E type and was rejected by Guenter Roeck and Frank Crawford because the chips are architecturally different:
+
+- 11 mV ADC scale (vs IT8628E's 12 mV) — voltage readings would be wrong
+- No PECI on IT8625E (vs IT8628E has it) — temperature sources differ
+- Multiple register banks on IT8625E (vs IT8628E single bank) — requires bank-select logic
+
+The OpenWrt 25.12.4 kernel therefore ships `kmod-hwmon-it87` with **no** IT8625E support out of the box. Loading the stock module with `force_id=0x8625 ignore_resource_conflict=1` makes `__init` exit silently with `-ENODEV` because the chip_type lookup table has no entry for IT8625E.
+
+#### Building `frankcrawford/it87` out-of-tree
+
+The fork at <https://github.com/frankcrawford/it87> has a proper `[it8625]` entry in `it87_devices[]` with the correct feature flags (`FEAT_BANK_SEL`, `FEAT_11MV_ADC`, `FEAT_SIX_FANS`, `FEAT_SIX_PWM`, no `FEAT_TEMP_PECI`) and a dedicated case in the temp-source decoding switch. Building it against the OpenWrt SDK 25.12.4 for kernel 6.12.87:
+
+- Build env: SDK extracted on an x86_64 Linux host (native — faster than emulated Mac/aarch64). Required `apt-get install build-essential libncurses-dev zlib1g-dev libssl-dev libelf-dev git python3 bc bison flex` on a Debian/Ubuntu host.
+- The source has Gigabyte-WMI conditional helpers (`gbw_lid`, `mb_is_gigabyte`, `gbw_siv_*`) which compile as unused functions on non-Gigabyte targets. OpenWrt's kernel CFLAGS treat unused functions as errors; build needs `KCFLAGS="-Wno-error=unused-function -Wno-unused-function"`.
+- `it87_check_pwm()` calls a one-time BIOS-defaults sanity check on probe. When the BIOS leaves the chip with `FAN_CTL & 0x87 == 0` (which corresponds to `FAN_CTL POLARITY = ACTIVE LOW` in the AMI Setup UI), the check fails and the driver disables the PWM interface entirely. If `POLARITY = ACTIVE HIGH` in BIOS, this trigger does not fire and no patch is needed. (We did patch the function to unconditionally `return 1` during early experimentation; not necessary in the final config.)
+
+Loading the resulting `it87.ko` requires `pnpacpi=off` on the kernel cmdline — without it, ACPI's motherboard PnP pseudo-device claims the `0a20-0a2f` I/O range (`/proc/ioports` shows `0a20-0a2f : pnp 00:00`) and the driver's `request_muxed_region()` is refused.
+
+After load:
+
+```text
+[it87] Found IT8625E chip at 0xa20, revision 12
+[it87] Beeping is supported
+```
+
+`hwmon3` (named `it8625`) appears with **pwm1, pwm2, pwm4, pwm5, pwm6** (the driver skips `pwm3` on this chip), each with `_auto_point1/2/3_temp`, `_auto_slope`, `_auto_start`, `_enable`, `_freq`. Two `fan*_input` files (read 0 RPM continuously — no tach signal), six `in*_input` voltages, three `temp*_input` (temp3 disabled, reads -70 °C).
+
+#### BIOS layout
+
+`Advanced → Hardware Monitor → Smart Fan Function`:
+
+```text
+FAN_CTL POLARITY = [ACTIVE LOW | ACTIVE HIGH]   ← must be HIGH; LOW inverts PWM logic
+                                                  AND triggers mainline it87 self-disable
+Fan 1 Settings:
+  Smart Fan 1 Mode = [Software Mode | Automatic | Manual]
+  Manual PWM Setting = 0..255
+Fan 2 Settings: ... same options
+```
+
+"Software Mode" yields chip control to the OS (Linux writes pwm sysfs). "Automatic" runs a BIOS-internal temperature curve. "Manual" pins PWM at the configured value. All three write to chip registers correctly.
+
+#### Empirical behaviour
+
+The chip is fully reachable from Linux. BIOS-side configuration round-trips through the chip into sysfs in one direction:
+
+- BIOS `Fan 1 → Manual Mode, Manual PWM = 69` → sysfs `pwm1 = 69` after boot (round-trip confirmed).
+- BIOS `Fan 2 → Manual Mode, Manual PWM = 89` → does NOT appear in any visible chip register; sysfs `pwm2` reads the chip's default (70).
+
+Writing duty cycle 0..255 to **any** of the five exposed PWM channels via sysfs produces **zero audible change** to the physical fan. Direct port writes via `/dev/port` to the chip's PWM control + duty registers (offsets 0x15..0x17, 0x7f, 0xa7, 0xaf and 0x63, 0x6b, 0x73, 0x7b, 0xa3, 0xab from base `0xa20`) produce the same null result. `fan1_input` and `fan2_input` both read 0 RPM continuously. BIOS UI reports `Fan speed N/A` for both fans — the tach pin is also unread.
+
+`isadump` of LDN 7 (GPIO / pin multiplexer) shows the pin-mux registers (0xc0+, 0xe0+) are populated by BIOS but LDN 7's `0x30 = 0x00` — the GPIO interface is not active. Without an IT8625E datasheet (proprietary, ITE NDA) the specific pin → function bindings cannot be decoded from the register contents.
+
+#### What the data says
+
+**Confirmed empirically — fan's PWM input is not electrically connected on this PCB.** Three independent control paths were tested, each writing the same value to the chip and producing the same observed result:
+
+1. **Linux sysfs** — `echo 0 > pwm1` … `echo 255 > pwm1` across all five exposed channels (`pwm1`, `pwm2`, `pwm4`, `pwm5`, `pwm6`).
+2. **Direct chip register writes via `/dev/port`** — bypassing the driver, writing to PWM control + duty registers at base+0x15..0x17, 0x7f, 0xa7, 0xaf and 0x63..0x6b..0x73..0x7b..0xa3..0xab.
+3. **BIOS Setup Manual PWM Setting** at any value from 0 to 255 — BIOS writes directly into chip registers itself, bypassing the OS entirely.
+
+All three observe the same outcome: the chip register accepts the value (sysfs round-trip from BIOS Fan 1 setting confirmed), and the physical fan RPM does not change. Since path 3 (BIOS) takes Linux out of the equation entirely, every software-side hypothesis is ruled out:
+
+- ❌ Driver bug (Linux not running for path 3)
+- ❌ OS-level pinmux / ACPI claim conflict (BIOS sees its own chip cleanly)
+- ❌ POLARITY misconfiguration (tested with `ACTIVE HIGH` and `Manual PWM = 0` — fan unchanged)
+- ❌ `pwm_mode()` return-value confusion ([issue #97](https://github.com/frankcrawford/it87/issues/97) bug — not applicable; BIOS bypasses our driver)
+
+What's left as the sole explanation: the chip's PWM output pin (and the TACH input pin — `Fan speed N/A` in BIOS, `fan_input = 0` in sysfs) **is not electrically connected to the fan-header pin-3 / pin-4 traces on this PCB revision**. Either the trace is absent, or the chip's relevant pin is muxed to a different function that does not route to the header. The fan receives +12 V continuously regardless of any PWM duty value written anywhere; only the +12 V and GND wires of the header are wired to the chip's power-domain rails, not to its PWM/TACH controller pins.
+
+Frank Crawford's response to a similar null-effect observation in [issue #20](https://github.com/frankcrawford/it87/issues/20) (Intel NUC J3455, same chip + revision) was the diagnostic question *"SuperIO chips implement many hardware low-level functions in the one chip, but nothing says that they all have to be used on every board. Does the board have an onboard fan?"* — in that thread it was asked as a diagnostic because the reporter's board genuinely had no fan attached; in our case the question can be re-applied with a definitive answer: there IS a fan, but it is not wired to the chip's PWM/TACH pins.
+
+**IT8625E itself is not broken** — a separate reporter (amfern) in [issue #20](https://github.com/frankcrawford/it87/issues/20) got the same chip working on a BIOSTAR 650Q Racing board after patching `sensors-detect` to map IT8625E to `it87` (the only blocker there was lm-sensors' chip-table omission). The chip + `frankcrawford/it87` combination is known good when the PCB wiring is.
+
+A diagnostic dump (sysfs hwmon state + `isadump` of LDN 4/5/7 + BIOS metadata + observed behaviour) is saved on the live box at `/root/it8625-diag/dump.txt`, suitable for attaching to a future frankcrawford/it87 issue if anyone with this CWWK SKU wants to chase the PCB trace question (would require oscilloscope or multimeter continuity testing — board schematics are not publicly available).
+
+#### Thermal headroom — empirically safe to disconnect
+
+`stress-ng --cpu 8 --vm 1 --vm-bytes 256M --timeout 300s` against N305 with the stock fan running, package and core temps as measured via `coretemp`:
 
 ```text
 idle        30 °C
@@ -100,23 +171,19 @@ min 4       67 °C   ← steady-state peak under 100% × 8 threads
 cooldown    35 °C after 30 s
 ```
 
-TjMAX on N305 is 105 °C, throttling begins ~95-100 °C. With fan on, ~38 °C headroom. The N305 is a 15 W TDP part in an all-aluminum chassis with a heatsink mass that absorbs sustained 100% × 8-thread CPU load just fine. STH's review of this 2×SFP+ SKU notes the chassis "may look fanless" but explicitly confirms a fan is present on both the N100 and N305 variants tested — the box is not designed for fanless operation, the fan is part of the spec. (The Internet's "fanless N305" stories typically reference the older 4× 2.5GbE-only SKU, which is a different, larger chassis with passive-only cooling.) On this 2×SFP+ SKU the stock fan exists as part of the thermal design, not as a redundant safety margin. Empirical headroom above suggests passive operation is feasible for router workloads, but it does deviate from the manufacturer's intended cooling.
+TjMAX on N305 is 105 °C, throttling begins ~95-100 °C. With the fan disconnected and router workload (1–10 % CPU average, AWG tunnel), package temp settles in the 50–60 °C range. Passive cooling is feasible for the intended use case; it does deviate from the manufacturer's intended thermal envelope.
 
-**Practical paths to reduce noise**, in order of preference for the 4-pin layout on this board:
+#### Working paths to reduce noise
 
-1. **BIOS Smart Fan curve (recommended first).** With a 4-pin PWM-capable fan, the board's Smart Fan controller can drive it from a temperature curve. In BIOS: `Advanced` → `Hardware Monitor` (or `H/W Monitor` / `PC Health`) → `Smart Fan Configuration`. Switch fan mode from `DC` to `PWM` (default on many SKUs is `DC` because the controller can't tell what's plugged in), then configure a quiet curve — e.g. fan off / minimum below 50 °C, ramp to 30% at 60 °C, 60% at 75 °C, 100% above 85 °C. Save, reboot, listen. Costs zero, no soldering, fully reversible. Try this before reaching for hardware mods.
+Each is independent of the OS-side PWM dead end:
 
-2. **Physical disconnect.** Unplug the fan connector from the board. With router workload (1–10% CPU average, AWG tunnel) the box settles around 50–60 °C package on passive cooling alone — well below throttle. The right choice if BIOS Smart Fan can't get quiet enough at idle, OR if the operator never plans to push the box near 10G symmetric NAT.
+1. **Physical disconnect** of the fan header. Box runs passive. Thermal data above supports this for router workload.
+2. **Voltage drop** inline in the +12 V conductor of the fan cable — two 1N4007 diodes in series drop ~1.4 V, fan sees ~10.6 V, RPM and noise measurably lower.
+3. **Fan replacement** with a quieter motor at the same form factor. The PCB header has no PWM control on this board, so 3-pin and 4-pin fans behave equivalently here (full speed always); pick a fan rated for low noise at +12 V.
+4. **Standalone thermistor-driven controller** taking the fan cable out of the +12 V rail and running its own curve (~$5–10 on AliExpress, "automatic temperature fan speed controller").
+5. **Accept the noise** if the box is in a closet / rack / non-bedroom location.
 
-3. **Voltage drop hack.** Two 1N4007 diodes in series in the +12 V wire drop ~1.4 V, fan sees ~10.6 V instead of 12 V, RPM (and noise) drops measurably. Only useful if BIOS Smart Fan is unavailable / broken on this SKU AND full disconnect is not acceptable (e.g. operator wants some airflow always).
-
-4. **PWM-to-DC converter** (e.g. **Noctua NA-FC1**, ~$20) — only relevant if the stock fan turns out to be 4-pin connector but 3-pin behaviour (PWM signal ignored). Reads PWM duty from the board and outputs proportional 0-12 V on the DC line. Skip unless BIOS PWM mode demonstrably fails to slow the fan.
-
-5. **Standalone thermistor-driven controller** (~$5-10, AliExpress search `automatic temperature fan speed controller`) — independent of motherboard entirely. NTC 10k on the heatsink, board reads it, drives fan voltage on its own curve. Useful if BIOS Smart Fan is broken AND voltage drop is too crude. Probably overkill on this hardware.
-
-6. **Heatsink-only / quieter fan swap** via a community-designed 3D-printed adapter. The Thingiverse model `topton/cwwk fan replacement for heatsink` is the closest published precedent, but it targets a different CWWK SKU; this 2×SFP+ board may need a custom design.
-
-Recommendation for this build: configure BIOS Smart Fan PWM curve first, then physical disconnect if even the curve's idle setting is audible. The thermal numbers above support either path. Re-evaluate if planning sustained 10G symmetric workloads.
+The combination most likely to retain "some cooling" without audibility is option 2 (diode drop) or option 4 (thermistor controller). Option 1 (disconnect) is the simplest if you accept passive operation.
 
 ### BIOS updates — where to get them
 
