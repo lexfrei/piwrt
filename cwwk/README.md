@@ -40,12 +40,12 @@ If you want any of those, add them on top and keep your own branch — the READM
 - **Intel 82599ES is the SFP+ chip on this design** (per the STH review). Old but rock-solid — same Niantic silicon datacenters ran for a decade. Linux `ixgbe` driver, well-supported in any recent kernel.
 - **If you plug in non-Intel SFP+ modules** and see `unsupported SFP+ module type` in `dmesg` with the port refusing to come up: the chip itself accepts any module electrically, but the `ixgbe` driver gates them through a vendor allowlist. Override with `/etc/modules.d/30-ixgbe` containing `ixgbe allow_unsupported_sfp=1,1` (two `1`s for two ports — one value per ixgbe instance, both PCI functions of the 82599ES). Most Intel-coded DACs and FS.com/10gtek modules with Intel vendor strings load without this. Don't set it preemptively — it's a no-op when the ports are empty, and only matters when a specific non-Intel module surfaces an error.
 
-- **82599ES is power-hungry and warm**. ~6 W per chip TDP, no fan on the stock chassis — the SFP+ cage gets noticeably hot under sustained load. Not a defect, just physics. Make sure the thermal pad from the chip to the case is intact when reassembling.
+- **82599ES is power-hungry and warm**. ~6.5 W TDP per controller (Intel datasheet). The SFP+ cage gets noticeably hot under sustained load — not a defect, just physics. The stock chassis ships with a chassis fan (see Fan / acoustic noise section below); thermal pads from chip to case do the heavy lifting under typical load. Make sure the thermal pad is intact when reassembling.
 
 ### Intel i226-V
 
 - **Linux kernel 6.8+ has all the i226 EEE / TSN fixes**. OpenWrt 25.12.4 ships kernel 6.12.87, so the historical advice to disable EEE on these NICs is no longer required. Leave defaults.
-- **Port naming**: `igc` driver. Combined with `ixgbe` SFP+, expect either `eth0..eth3` (kernel-ordered) or `enp1s0` / `enp2s0` / ... (predictable-name scheme depending on udev rules in the OpenWrt image). Identify which physical port maps to which interface name after the first boot:
+- **Port naming**: `igc` driver. Observed on this build: `eth0..eth3` kernel-ordered (OpenWrt 25.12 x86_64 does not enable systemd-style predictable names by default). On other distros / other OpenWrt builds with custom udev rules, you may see `enp1s0` / `enp2s0` / ... instead. Identify which physical port maps to which interface name after the first boot:
 
   ```sh
   for i in /sys/class/net/eth*; do
@@ -60,13 +60,13 @@ If you want any of those, add them on top and keep your own branch — the READM
 
 ### M.2 slot
 
-The board has an M.2 slot in 2280 form factor (some SKUs may also accept 2230 form-factor cards via additional standoff). It is a **regular PCIe M.2**, not CNVi — confirmed empirically by booting OpenWrt from a WD Green SN350 NVMe SSD installed there. Earlier revisions of CWWK marketing material describe a "Wi-Fi slot", but on this 2×SFP+ N305 board the slot enumerates standard NVMe devices without quirk. PCIe x2 lane width on this design (not x4), so peak read tops out around 1.6 GB/s — irrelevant for a router, take a different board for NAS-class storage.
+The board has an M.2 slot in 2280 form factor (some SKUs may also accept 2230 form-factor cards via additional standoff). It is a **regular PCIe M.2**, not CNVi — confirmed empirically by booting OpenWrt from a WD Green SN350 NVMe SSD installed there. Earlier revisions of CWWK marketing material describe a "Wi-Fi slot", but on this 2×SFP+ N305 board the slot enumerates standard NVMe devices without quirk. Lane width on the Alder Lake-N platform is constrained (total 9 PCIe Gen3 lanes shared across two 82599ES SFP+ controllers, two i226 NICs, and the M.2 slot), so peak NVMe bandwidth here is below a standard x4 desktop slot — fine for a router boot device, take a different board for NAS-class storage where NVMe throughput matters.
 
 Wi-Fi is not provisioned in this setup regardless of what the slot can take — radio coverage comes from a downstream UniFi AP, not from a card on this board.
 
 ### PSU
 
-- **12 V brick**, typically 5 A / 60 W stock. Under load (N305 + both SFP+ + USB) the box pulls 35–40 W, leaves only marginal headroom. If you find the supplied PSU unreliable, replace with a 12V / 6 A barrel-jack adapter (5.5×2.5 mm tip on the CWWK chassis). Voltage tolerance is reasonable; the connector is the more common failure point than the brick itself.
+- **12 V brick**, typically 5 A / 60 W stock per CWWK listings. Under sustained load (N305 + both SFP+ active + USB devices) draw climbs significantly — STH's review measured the 2.5GbE-only N305 SKU pulling ~17 W idle and ~28 W under 100% CPU, the 2×SFP+ SKU should be higher due to 82599ES (~6.5 W extra per chip when active). Stock 60 W brick has comfortable headroom for typical router workloads; only tight under simultaneous N305 100% + dual-SFP+ saturated. If the supplied PSU acts unreliably, replace with a 12 V / 6 A barrel-jack adapter (5.5×2.5 mm tip on the CWWK chassis). The connector tends to fail before the brick itself.
 
 ### Fan / acoustic noise
 
@@ -91,7 +91,7 @@ min 4       67 °C   ← steady-state peak under 100% × 8 threads
 cooldown    35 °C after 30 s
 ```
 
-TjMAX on N305 is 105 °C, throttling begins ~95-100 °C. With fan on, ~38 °C headroom. The N305 is a 15 W TDP part in an all-aluminum chassis with a heatsink mass that absorbs sustained 100% × 8-thread CPU load just fine — STH's review of this exact SKU explicitly labels it "fanless", which lines up with the measurements. Stock fan exists as a safety margin for sustained 10G symmetric NAT, not for typical router workloads.
+TjMAX on N305 is 105 °C, throttling begins ~95-100 °C. With fan on, ~38 °C headroom. The N305 is a 15 W TDP part in an all-aluminum chassis with a heatsink mass that absorbs sustained 100% × 8-thread CPU load just fine. STH's review of this 2×SFP+ SKU notes the chassis "may look fanless" but explicitly confirms a fan is present on both the N100 and N305 variants tested — the box is not designed for fanless operation, the fan is part of the spec. (The Internet's "fanless N305" stories typically reference the older 4× 2.5GbE-only SKU, which is a different, larger chassis with passive-only cooling.) On this 2×SFP+ SKU the stock fan exists as part of the thermal design, not as a redundant safety margin. Empirical headroom above suggests passive operation is feasible for router workloads, but it does deviate from the manufacturer's intended cooling.
 
 **Practical paths to reduce noise**, in order of preference for the 4-pin layout on this board:
 
@@ -155,7 +155,7 @@ diskutil eject /dev/diskN                        # macOS, after dd
 
 **Option B — liveUSB on the appliance itself**: boot Alpine / Ubuntu / OpenWrt-installer from a USB stick, attach the NVMe internally, run the same `dd` from the live environment. Slower but no adapter needed.
 
-After `dd`, the NVMe has two partitions visible (`disk2s1` 67 MB FAT32 boot, `disk2s2` 109 MB Linux rootfs squashfs) and ~99% of the device unallocated. Overlay grows into the tail on first mount.
+After `dd`, the NVMe has three partitions visible via `parted` on a running system: `p128` ~0.23 MiB `bios_grub`, `p1` 16 MiB FAT16 EFI System Partition, `p2` ~104 MiB Linux rootfs squashfs + overlay loop region. (`diskutil` on macOS reports the EFI partition as ~67 MB Windows_FAT_32; this is a diskutil display quirk, the actual partition is 16 MB FAT16 per parted on the running box.) ~99% of the device is unallocated tail — used in the resize step below.
 
 ### 2. BIOS / UEFI settings
 
@@ -188,13 +188,61 @@ EOF
 chmod 600 /etc/dropbear/authorized_keys
 ```
 
-Set a root password as a fallback if you want it (optional — if you're confident in the key, leave it empty and the password-auth disable in step 11 makes the shadow file irrelevant anyway):
+Set a root password as a fallback if you want it (optional — if you're confident in the key, leave it empty and the password-auth disable in step 13 makes the shadow file irrelevant anyway):
 
 ```sh
 passwd
 ```
 
-### 4. Identify physical port → interface mapping
+### 4. Expand root partition to fill the NVMe
+
+After `dd`, the partition layout has a ~104 MiB rootfs region and ~99% of the disk as unallocated tail (because the combined-efi image was sized for tiny flash devices). Without expansion, `/overlay` ends up ~86 MB — runs out of room as soon as you `apk add` more than a couple of packages. The expand is online, takes ~20 seconds, no reboot needed:
+
+```sh
+# Resize tools are not in the base image.
+apk update
+apk add parted losetup resize2fs
+
+# Identify the root disk (resolves nvme0n1 / sda / etc.) from the kernel
+# cmdline so this snippet works regardless of where OpenWrt was flashed.
+ROOT_DISK="/dev/$(awk -F'/dev/' '/root=/{print $2}' /proc/cmdline | cut -d' ' -f1 | sed 's/p\?[0-9]*$//')"
+echo "root disk: ${ROOT_DISK}"   # expect /dev/nvme0n1 on this hardware
+
+# Fix the GPT: the combined-efi image's backup-header location was set
+# for the image size, not your actual disk. parted detects this and
+# offers a Fix prompt when you ask it to print. Auto-answer "Fix":
+echo "Fix" | parted ---pretend-input-tty "${ROOT_DISK}" print
+
+# Resize partition 2 (the Linux rootfs region) to use 100% of the disk.
+parted --script "${ROOT_DISK}" resizepart 2 100%
+
+# Refresh the kernel's view of the partition table. BusyBox does not
+# ship `partprobe`; `partx -u` is in the `partx` binary that landed
+# alongside util-linux on x86_64 OpenWrt.
+partx -u "${ROOT_DISK}"
+
+# Grow the ext4 filesystem inside /dev/loop0 (which is the overlay
+# device, backed by the partition we just resized). resize2fs supports
+# online expansion on a mounted filesystem.
+#
+# Note: busybox `losetup` does NOT support `--capacity` (long flag) to
+# tell the loop device about the resized backing. `partx -u` above
+# already triggered that refresh implicitly via the partition event.
+resize2fs /dev/loop0
+```
+
+After this, `df -h | grep /overlay` should report close to the full disk size:
+
+```text
+/dev/loop0              438.1G     29.6M    423.0G   0% /overlay
+overlayfs:/overlay      438.1G     29.6M    423.0G   0% /
+```
+
+Verified empirically on a 500 GB WD Green SN350: from 86 MB to 438 GB overlay, online, ~15 seconds end-to-end.
+
+The resize is permanent — it lives in the GPT on disk, survives reboot and sysupgrade. No further action needed.
+
+### 5. Identify physical port → interface mapping
 
 Run on the appliance:
 
@@ -219,7 +267,7 @@ eth3  driver=igc    speed=2500Mb/s     # 2.5G RJ45 #2
 
 Note which physical port (looking at the chassis face) corresponds to each `eth*` — unplug cables one at a time and watch `ip link show` for `state DOWN` to ground-truth the mapping. Decide which port is `<WAN_PORT>` (facing the ISP) and which is `<TRUNK_PORT>` (facing the UDR7 / downstream switch). Suggested role assignment in `configs/network.example` is a starting point, not a requirement.
 
-### 5. AmneziaWG packages
+### 6. AmneziaWG packages
 
 OpenWrt 25.12.4 ships kernel 6.12.87. Slava-Shchipunov maintains pre-built AWG packages for both aarch64 and x86_64 targets; for our box the ARCH string is `x86_64`, and the published artefact filenames carry it twice (e.g. `kmod-amneziawg_v25.12.4_x86_64_x86_64.apk`). Verify before downloading:
 
@@ -254,9 +302,9 @@ modprobe amneziawg
 awg --version
 ```
 
-`luci-proto-amneziawg` is installed but then immediately removed in step 11 (LuCI removal) — it's only needed transiently to register the proto handler with netifd. The kernel module + userspace tools stay.
+`luci-proto-amneziawg` is installed but then immediately removed in step 13 (LuCI removal) — it's only needed transiently to register the proto handler with netifd. The kernel module + userspace tools stay.
 
-### 6. DNS, full-iproute2, watchdog packages
+### 7. DNS, full-iproute2, watchdog packages
 
 ```sh
 # Base dnsmasq lacks nftset support — replace with dnsmasq-full.
@@ -281,7 +329,7 @@ apk add tcpdump-mini ethtool
 apk add vnstat2
 ```
 
-### 7. Drop in the configs
+### 8. Drop in the configs
 
 All of these are templates. Replace `<PLACEHOLDER>` slots from your AWG `.conf` and decide on port names / VLAN IDs:
 
@@ -310,7 +358,7 @@ cp configs/hotplug.d/iface/90-split-vpn /etc/hotplug.d/iface/
 chmod +x /etc/hotplug.d/iface/90-split-vpn
 ```
 
-### 8. Patch dnsmasq init to run as root
+### 9. Patch dnsmasq init to run as root
 
 Required because the `nftset=/domain/...` directives in `/etc/dnsmasq.d/allow-domains.conf` need `CAP_NET_ADMIN` to actually write into the nft sets. The default `dnsmasq` user inside the ujail sandbox does not have that capability — the directives parse silently but `nft list set inet fw4 allow_domains_v4` stays empty.
 
@@ -324,7 +372,7 @@ sed -i \
 
 `post-upgrade.sh` re-applies this on every boot if a sysupgrade resets the init script.
 
-### 9. Drop in the scripts + crontab
+### 10. Drop in the scripts + crontab
 
 ```sh
 mkdir -p /usr/share/piwrt
@@ -352,7 +400,7 @@ EOF
 
 No wifi-watchdog — there's no on-board Wi-Fi to watch.
 
-### 10. Activate
+### 11. Activate
 
 Order matters because of dependency chains (DNS for AWG endpoint resolution, etc.):
 
@@ -371,7 +419,7 @@ sleep 4
 /usr/bin/update-bypass-list
 ```
 
-### 11. Verify
+### 12. Verify
 
 ```sh
 # AWG up and handshaking.
@@ -394,7 +442,7 @@ curl https://1.1.1.1/cdn-cgi/trace
 nft list set inet fw4 allow_domains_v4 | head -n 30
 ```
 
-### 12. Disable password auth + remove LuCI
+### 13. Disable password auth + remove LuCI
 
 Only after verifying you can SSH in with the key.
 
@@ -543,7 +591,7 @@ The only risk is locking yourself out by disabling password auth before verifyin
 
 LuCI is OpenWrt's web admin UI. We're admin-by-SSH-only, so it's dead weight: 24 packages (luci-base, luci-mod-*, luci-app-*, rpcd-mod-luci, themes, lib-uqr, ...) plus `uhttpd` and `uhttpd-mod-ubus` and `libustream-mbedtls`. Removing them frees about 5 MiB of squashfs overlay and silences a network service nobody talks to. The dependency `rpcd` (without the LuCI module) stays — it backs ubus, which other things use.
 
-Removal command in step 12 of the walkthrough above. `post-upgrade.sh` does **not** re-install any of these on sysupgrade — the comments in the script call out the omission explicitly.
+Removal command in step 13 of the walkthrough above. `post-upgrade.sh` does **not** re-install any of these on sysupgrade — the comments in the script call out the omission explicitly.
 
 ## Track changes to /etc
 
