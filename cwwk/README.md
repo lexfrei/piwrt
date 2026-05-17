@@ -456,6 +456,74 @@ The Russian-DNS resolver (`77.88.8.8` Yandex) is pinned alongside in main table 
 
 iproute2-full quirk: the `table N` argument must come **before** the nexthop chain. `ip route add default nexthop ... nexthop ... table 100` fails with `'nexthop' or end of line is expected instead of 'table'`. Correct order: `ip route add table 100 default nexthop ... nexthop ...`. The hotplug script writes it correctly; if you reorder, expect breakage.
 
+## DNS chicken-and-egg at boot
+
+A subtle deadlock that bit the first reboot test, and the reason `configs/network.example` ships with `option auto '0'` on awg0 and recommends an IP-literal `endpoint_host` rather than a hostname.
+
+The deadlock chain on cold boot, when the AmneziaWG tunnel is the default route in main routing table:
+
+1. `/etc/init.d/network start` runs early in boot.
+2. netifd picks up awg0 (`option auto '1'` would mean "bring this up now") and calls the amneziawg proto handler.
+3. The proto handler calls `awg setconf` with the peer block, which includes `Endpoint=<hostname>:<port>`. The userspace tool resolves `<hostname>` via glibc → `/etc/resolv.conf` → `127.0.0.1` → dnsmasq → `127.0.0.1:5053` (https-dns-proxy) → DoH to `1.1.1.1`.
+4. At this point in boot, https-dns-proxy may not have completed its initial bootstrap, OR dnsmasq may not have accepted its first query yet, OR the route to `1.1.1.1` does not exist (because the default route is *supposed* to come from awg0, which has not come up yet).
+5. The hostname lookup fails. The proto handler enters its retry-with-backoff loop: 1.00s, 1.20s, 1.44s, 1.73s, 2.07s, ... about 12 attempts.
+6. After ~30 seconds of retries the handler gives up. netifd marks awg0 DOWN. No more automatic retry.
+7. awg-watchdog (in cron, runs every 2 minutes) eventually detects the missing handshake and runs `ifdown awg0 && ifup awg0`. By then DNS works and the second attempt succeeds.
+
+Symptom: 2+ minute delay between cold boot and tunnel coming up. Until awg-watchdog rescues, the box has no default route at all (main table is empty), `wait_for_wan` in `post-upgrade.sh` blocks waiting for DNS, and locally-originated outbound from the router returns EPERM.
+
+**Two fixes applied together; either alone is insufficient.**
+
+### Fix 1: `option auto '0'` on awg0
+
+In `/etc/config/network`:
+
+```text
+config interface 'awg0'
+    option proto 'amneziawg'
+    option auto '0'
+    ...
+```
+
+netifd skips awg0 at boot entirely. The interface is brought up later, explicitly, by `/usr/share/piwrt/post-upgrade.sh` after `wait_for_wan()` has confirmed `ping 1.1.1.1` AND `nslookup downloads.openwrt.org` both succeed. By the time `ifup awg0` is called, the DNS chain is verified working.
+
+Manual `ifup awg0` from the CLI continues to work regardless of the `auto` flag — `auto` only governs boot-time behaviour.
+
+### Fix 2: IP-literal `endpoint_host`
+
+In `/etc/config/network`:
+
+```text
+config amneziawg_awg0
+    option endpoint_host '<SERVER_IP>'
+    ...
+```
+
+The proto handler still calls `getaddrinfo("<SERVER_IP>")`, but with a literal IP the glibc resolver returns immediately from the numeric-address path — no DNS query, no chain, no chicken-and-egg. AWG comes up even if dnsmasq is dead.
+
+Combined with `/etc/hosts` entry mapping the provider hostname to the IP, any other tooling that queries the name resolves it locally:
+
+```text
+echo "136.0.175.197	po.34298r2894ru8934r984328u.online" >> /etc/hosts
+```
+
+### Why both fixes together
+
+- Without Fix 1 (`auto='1'`): netifd still tries to ifup awg0 too early in boot, before `post-upgrade.sh` has even fired. With IP-literal endpoint, this would *probably* succeed since DNS is not needed, but you're racing the kernel-module load order and any other early-boot weirdness — Fix 1 makes the timing deterministic.
+- Without Fix 2 (hostname endpoint): even with Fix 1, `post-upgrade.sh`'s `ifup awg0` runs right after `/etc/init.d/dnsmasq restart`, which briefly tears down the DNS chain. The 3-second sleep added to `post-upgrade.sh` covers most of this, but a sluggish https-dns-proxy bootstrap could still cause the retry loop to exhaust on a slow disk or under load.
+
+With both fixes, the tunnel is up and handshaking within ~10 seconds of `eth1` getting DHCP at boot.
+
+### IP rotation risk
+
+AWG providers occasionally rotate endpoint IPs. If `<SERVER_IP>` becomes stale:
+
+- AWG won't come up after a reboot; existing connections won't survive an endpoint-key-rotation handshake.
+- Recovery: update `option endpoint_host` in `/etc/config/network` AND `/etc/hosts` entry, then `ifdown awg0 && ifup awg0`.
+- A long-term hardening would be a periodic refresh of both files from a known-good source. Out of scope for this README.
+
+In practice, most AWG providers keep endpoint IPs stable for months. If yours doesn't, switch back to the hostname form (accept the slower boot convergence via awg-watchdog rescue) and rely on awg-watchdog as the failover mechanism instead.
+
 ## SSH hardening
 
 ### Why disable password auth
