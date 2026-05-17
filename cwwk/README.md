@@ -74,6 +74,41 @@ If you want any of those, add them on top and keep your own branch — the READM
 
 - **12 V brick**, typically 5 A / 60 W stock. Under load (N305 + both SFP+ + USB) the box pulls 35–40 W, leaves only marginal headroom. If you find the supplied PSU unreliable, replace with a 12V / 6 A barrel-jack adapter (5.5×2.5 mm tip on the CWWK chassis). Voltage tolerance is reasonable; the connector is the more common failure point than the brick itself.
 
+### Fan / acoustic noise — no Linux-side PWM path
+
+The chassis ships with proprietary 3-pin DC fans (chassis fan + a separate small SFP-cage fan in some SKUs). Bladewheels are screwed directly into the heatsink — no standard 40×40 frame, so axial-fan drop-in replacements need a 3D-printed adapter. Stock fans run at fixed full speed and are the dominant source of acoustic noise on this box.
+
+**SuperIO is not reachable from Linux** on this design. The empirical findings:
+
+- `it87` and `nct6775` kernel modules fail probe even with `acpi_enforce_resources=lax` on the kernel cmdline and brute-force scans across the usual `force_id` values (`0x8625, 0x8628, 0x8665, 0x8688, 0x8686, 0x8728, 0x8772, 0x8623, 0x8613, 0x8716, 0x8718, 0x8720, 0x8607, 0x8771`). The chip is either at a non-standard LPC port or not in either driver's supported list.
+- ACPI exposes 5 `cooling_device*` entries of `type=Fan` with `max_state=1` — binary on/off only, no PWM duty cycle surface. All read `cur_state=0` even while the physical fan spins at full speed, confirming the fan is driven by BIOS / EC out-of-band, not by anything Linux can intercept.
+- DMI returns `"Default string"` for manufacturer/board, so board-specific quirks lookup is impossible.
+
+There is no programmatic path to throttle or stop the fan from inside OpenWrt. The kernel cmdline parameter is reverted in this setup — leaving `acpi_enforce_resources=lax` on without a working driver only loosens ACPI resource enforcement for no benefit.
+
+**Empirical thermal headroom** — `stress-ng --cpu 8 --vm 1 --vm-bytes 256M --timeout 300s` against N305 with the stock fan running, package and core temps as measured via `coretemp`:
+
+```text
+idle        30 °C
+min 1       64 °C
+min 2       62 °C
+min 3       64 °C
+min 4       67 °C   ← steady-state peak under 100% × 8 threads
+cooldown    35 °C after 30 s
+```
+
+TjMAX on N305 is 105 °C, throttling begins ~95-100 °C. With fan on, ~38 °C headroom. The N305 is a 15 W TDP part in an all-aluminum chassis with a heatsink mass that absorbs sustained 100% × 8-thread CPU load just fine — STH's review of this exact SKU explicitly labels it "fanless", which lines up with the measurements. Stock fans exist as a safety margin for sustained 10G symmetric NAT loads, not for typical router workloads.
+
+**Practical paths to reduce noise** (none require Linux work):
+
+1. **Physical disconnect.** Unplug the JST MX 1.25 fan connector from the board. Project router workload (1–10% CPU average, AWG tunnel) settles around 50–60 °C package with passive cooling alone — well below throttle. If the chassis has a separate SFP-cage fan and 10G is in use, leave that one connected (82599ES has ~6 W TDP and benefits from active airflow under symmetric 10G NAT); disconnect only the main chassis fan.
+2. **Voltage drop hack.** Two 1N4007 diodes in series in the +12 V wire of the fan drop ~1.4 V, fan sees ~10.6 V instead of 12 V, RPM (and noise) drops measurably. Cheapest no-tooling option.
+3. **PWM-to-DC converter** (e.g. **Noctua NA-FC1**, ~$20). Requires the board header to actually be 4-pin PWM (CWWK marketing says "JST MX 1.25 4-pin"; verify physically by counting pins) AND BIOS Smart Fan switched from `DC mode` to `PWM mode`. Converter reads PWM duty from the board, low-pass-filters it through an internal MOSFET regulator, outputs proportional 0-12 V to the existing 3-pin fan. Tach passes through. JST MX 1.25 ↔ standard-4-pin and standard-3-pin ↔ JST MX 1.25 adapters needed on both sides (AliExpress, ~$3 each).
+4. **Standalone thermistor-driven controller** (~$5-10, AliExpress search `automatic temperature fan speed controller`). NTC 10k on the heatsink, board reads it, drives fan voltage on its own curve. Independent of the motherboard entirely — useful if the header turns out to be physically 3-pin (no PWM signal source). Will likely keep the fan stopped under typical router workload, spin it up only under sustained load.
+5. **Heatsink-only / quieter fan swap** via a community-designed 3D-printed adapter. The Thingiverse model `topton/cwwk fan replacement for heatsink` is the closest published precedent, but it targets a different CWWK SKU; this 2×SFP+ board may need a custom design.
+
+Recommendation for this build: disconnect the chassis fan, keep SFP fan only if 10G is in use. The thermal numbers above support this. Re-evaluate if planning sustained 10G symmetric workloads.
+
 ## Prerequisites
 
 - A CWWK N305 4-port appliance (or any of the rebrand SKUs sold under Topton / Kingnovy / etc. with identical board layout — Intel 82599ES SFP+ + i226-V 2.5GbE pairing).
