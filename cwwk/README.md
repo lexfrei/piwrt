@@ -72,13 +72,22 @@ Wi-Fi is not provisioned in this setup regardless of what the slot can take — 
 
 A single chassis fan, proprietary form factor — bladewheel screwed directly into the heatsink, no standard 40×40 frame. **The cable is 4-pin**, so the fan itself is PWM-capable. Out of the box it runs at fixed full speed and is the dominant source of acoustic noise.
 
-**Linux-side PWM control does not work on this board.** Empirical findings:
+**Linux-side PWM control does not work on this board, but the chip IS identified.** Empirical findings:
 
-- `it87` and `nct6775` kernel modules fail probe even with `acpi_enforce_resources=lax` on the kernel cmdline and brute-force scans across the usual `force_id` values (`0x8625, 0x8628, 0x8665, 0x8688, 0x8686, 0x8728, 0x8772, 0x8623, 0x8613, 0x8716, 0x8718, 0x8720, 0x8607, 0x8771`). The SuperIO chip is either at a non-standard LPC port or not in either driver's supported list.
-- ACPI exposes 5 `cooling_device*` entries of `type=Fan` with `max_state=1` — binary on/off only, no PWM duty cycle surface. All read `cur_state=0` while the physical fan spins at full speed — fan is driven by BIOS / EC out-of-band, not by anything Linux can intercept.
-- DMI returns `"Default string"` for manufacturer/board, so board-specific quirks lookup is impossible.
+- SuperIO chip identified by `sensors-detect` (lm-sensors 3.6.2 package): **`ITE IT8625E`** at ISA address **`0xa20`** (confidence 9/9). The chip responds to standard SuperIO probe at port `0x2e` from userspace via `iopl(3)`, and `sensors-detect` reads its EC base address (`0xa20`) from the SuperIO config registers.
+- Mainline kernel `it87` driver supports IT8625E (added upstream ~2020). The driver loads successfully with `force_id=0x8625 ignore_resource_conflict=1`, but **`__init` returns silently without registering any hwmon device** — no diagnostic in `dmesg`.
+- **Root cause: `/proc/ioports` shows `0a20-0a2f : pnp 00:00`** — the EC port range is claimed by ACPI's motherboard PnP pseudo-device. Kernel `request_muxed_region(0xa20, 0x10)` returns NULL because of the conflict, the driver bails out of probe. `ignore_resource_conflict=1` was supposed to bypass this, but in the OpenWrt 25.12 kernel 6.12.87 build the parameter doesn't fully take effect (kernel-side resource tracking still wins).
+- `acpi_enforce_resources=lax` on kernel cmdline didn't help either — that flag relaxes ACPI's own reservation enforcement, but the explicit PnP 00:00 claim is a separate mechanism.
+- The `nct6775` driver was also tried (in case the chip was a Nuvoton): no, it's ITE.
+- DMI returns `"Default string"` for manufacturer/board, so board-specific kernel quirks lookup is impossible (e.g. DMI-based `dmi_check_system` table additions wouldn't fire on this hardware).
+- ACPI exposes 5 `cooling_device*` entries of `type=Fan` with `max_state=1` — binary on/off only, no PWM duty cycle surface. All read `cur_state=0` while the physical fan spins at full speed — fan is BIOS/EC out-of-band, ACPI cooling_device is decorative.
 
-Conclusion: tuning happens in BIOS, not in OpenWrt.
+Conclusion: the chip is reachable from **userspace** via direct `iopl(3) + outb/inb`, but no kernel hwmon device is exposed. To get OS-side PWM control without rewriting kernel resource tracking, one of:
+
+1. **Build `frankcrawford/it87` out-of-tree** (the maintained fork that explicitly supports IT8625E). Requires OpenWrt SDK 25.12 for kernel 6.12.87 + cross-compile + DKMS-style packaging. May handle the PnP conflict differently than mainline. Not exercised in this build.
+2. **Userspace fan-control daemon** that talks directly to IT8625E EC registers at `0xa20` via `iopl(3)`. ~200 lines of C, exists in some community projects (typically targeted at gaming-motherboard tuning utilities). Bypasses kernel hwmon entirely.
+3. **Hand-patch kernel** to drop the PnP 00:00 reservation on `0xa20` (custom `acpi_osi=` / `pnp_reserve_io=` boot arguments). Highly hardware-specific, fragile across BIOS updates.
+4. **Leave BIOS Smart Fan in charge** — IT8625E understands a PWM curve managed by BIOS, and the AMI Aptio setup screen exposes it. This was the path taken on this build. The kernel side never sees the PWM, but doesn't need to.
 
 **Empirical thermal headroom** — `stress-ng --cpu 8 --vm 1 --vm-bytes 256M --timeout 300s` against N305 with the stock fan running, package and core temps as measured via `coretemp`:
 
