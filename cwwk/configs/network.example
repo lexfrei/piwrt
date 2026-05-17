@@ -3,9 +3,9 @@
 # Never commit the populated file with private keys.
 #
 # Hardware: Intel Core i3-N305 + Intel 82599ES (2× SFP+ 10G) + Intel
-# i226-V (2× 2.5GbE). External 12V brick. M.2 2280 NVMe for storage,
-# M.2 2230 CNVi for Wi-Fi (unused in this setup — Wi-Fi is provided
-# by a separate UniFi AP downstream).
+# i226-V (2× 2.5GbE). External 12V brick. One M.2 PCIe slot used for
+# the NVMe boot device. No on-board Wi-Fi — radio coverage comes from
+# a downstream UniFi AP.
 #
 # Port naming on first boot is kernel/udev-dependent. Likely candidates:
 #

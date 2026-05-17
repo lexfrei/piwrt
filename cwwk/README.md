@@ -1,8 +1,8 @@
 # piwrt on CWWK N305
 
-CWWK 4-port appliance (Intel Core i3-N305 + 2× SFP+ 10G via Intel 82599ES + 2× 2.5GbE via Intel i226-V, external 12V brick, M.2 2280 NVMe + M.2 2230 CNVi Wi-Fi slot) running OpenWrt 25.12.4 as a headless gateway that tunnels all client traffic through an AmneziaWG v2 VPN. Same architecture as the Pi and Hopper setups — kill-switch-by-default routing, domain-based split-tunnel bypass for Russian services so their anti-fraud doesn't trip on a foreign exit IP, DoH upstream, no LuCI, SSH-key-only admin. Adapted for x86_64 silicon and a wired-only WAN profile (no LTE backup on this hardware).
+CWWK 4-port appliance (Intel Core i3-N305 + 2× SFP+ 10G via Intel 82599ES + 2× 2.5GbE via Intel i226-V, external 12V brick, one M.2 PCIe slot used for the NVMe boot device) running OpenWrt 25.12.4 as a headless gateway that tunnels all client traffic through an AmneziaWG v2 VPN. Same architecture as the Pi and Hopper setups — kill-switch-by-default routing, domain-based split-tunnel bypass for Russian services so their anti-fraud doesn't trip on a foreign exit IP, DoH upstream, no LuCI, SSH-key-only admin. Adapted for x86_64 silicon and a wired-only WAN profile (no LTE backup on this hardware).
 
-The CWWK box is positioned as the actual L3 gateway. Downstream is a UniFi UDR7 that operates as an AP + UniFi controller (in the standard UniFi "AP-mode workaround": dummy WAN on an isolated VLAN, all networks marked `VLAN only`, gateway IP repointed at this CWWK). A USW Flex Mini sits in the LAN segment as a downstream switch when needed. Wi-Fi on the CWWK's own M.2 E-key slot is unused — UniFi handles all radio coverage.
+The CWWK box is positioned as the actual L3 gateway. Downstream is a UniFi UDR7 that operates as an AP + UniFi controller (in the standard UniFi "AP-mode workaround": dummy WAN on an isolated VLAN, all networks marked `VLAN only`, gateway IP repointed at this CWWK). A USW Flex Mini sits in the LAN segment as a downstream switch when needed. The CWWK itself has no Wi-Fi — radio coverage comes from the UniFi AP.
 
 ## Architecture
 
@@ -38,14 +38,7 @@ If you want any of those, add them on top and keep your own branch — the READM
 ### CWWK N305 / 82599ES SFP+
 
 - **Intel 82599ES is the SFP+ chip on this design** (per the STH review). Old but rock-solid — same Niantic silicon datacenters ran for a decade. Linux `ixgbe` driver, well-supported in any recent kernel.
-- **`unsupported SFP+ module type` from cheap DACs / generic transceivers** is a known `ixgbe` behaviour. The chip itself accepts any module electrically; the driver gates them through a vendor allowlist by default. Override:
-
-  ```sh
-  # /etc/modules.d/30-ixgbe (create)
-  ixgbe allow_unsupported_sfp=1,1
-  ```
-
-  Two `1`s for two ports. Without this you'll see the error in `dmesg` and the port stays down with off-brand optics.
+- **If you plug in non-Intel SFP+ modules** and see `unsupported SFP+ module type` in `dmesg` with the port refusing to come up: the chip itself accepts any module electrically, but the `ixgbe` driver gates them through a vendor allowlist. Override with `/etc/modules.d/30-ixgbe` containing `ixgbe allow_unsupported_sfp=1,1` (two `1`s for two ports — one value per ixgbe instance, both PCI functions of the 82599ES). Most Intel-coded DACs and FS.com/10gtek modules with Intel vendor strings load without this. Don't set it preemptively — it's a no-op when the ports are empty, and only matters when a specific non-Intel module surfaces an error.
 
 - **82599ES is power-hungry and warm**. ~6 W per chip TDP, no fan on the stock chassis — the SFP+ cage gets noticeably hot under sustained load. Not a defect, just physics. Make sure the thermal pad from the chip to the case is intact when reassembling.
 
@@ -65,10 +58,11 @@ If you want any of those, add them on top and keep your own branch — the READM
   # igc   = 2.5G RJ45 ports
   ```
 
-### M.2 slots
+### M.2 slot
 
-- **M.2 2280 NVMe** — boot device, this is where OpenWrt's combined-efi image gets `dd`-ed. PCIe x2 lane width (not x4) on this design, so peak read tops out around 1.6 GB/s. For a router, irrelevant; for a NAS, take a different board.
-- **M.2 2230 CNVi** — Wi-Fi slot, accepts ONLY Intel AX-series cards (AX201 / AX211). The slot is CNVi, not regular PCIe — Mediatek / Qualcomm / Realtek M.2 cards do not enumerate. This setup leaves the slot empty.
+The board has an M.2 slot in 2280 form factor (some SKUs may also accept 2230 form-factor cards via additional standoff). It is a **regular PCIe M.2**, not CNVi — confirmed empirically by booting OpenWrt from a WD Green SN350 NVMe SSD installed there. Earlier revisions of CWWK marketing material describe a "Wi-Fi slot", but on this 2×SFP+ N305 board the slot enumerates standard NVMe devices without quirk. PCIe x2 lane width on this design (not x4), so peak read tops out around 1.6 GB/s — irrelevant for a router, take a different board for NAS-class storage.
+
+Wi-Fi is not provisioned in this setup regardless of what the slot can take — radio coverage comes from a downstream UniFi AP, not from a card on this board.
 
 ### PSU
 
