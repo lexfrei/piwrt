@@ -117,6 +117,15 @@ config interface 'wan6'
 
 config interface 'awg0'
 	option proto 'amneziawg'
+	# auto '0' — netifd does NOT bring this up at boot. Explicit ifup
+	# happens at the end of /usr/share/piwrt/post-upgrade.sh after
+	# wait_for_wan confirms the DNS chain is alive. See README section
+	# "DNS chicken-and-egg at boot" for why this matters; tl;dr: netifd
+	# starts awg0 too early on cold boot, before dnsmasq + https-dns-proxy
+	# are ready, the proto handler enters a retry-with-backoff loop that
+	# exhausts in ~30s, and awg0 stays DOWN until awg-watchdog rescues it
+	# 2 minutes later.
+	option auto '0'
 	option private_key '<CLIENT_PRIVATE_KEY>'
 	option mtu '1280'
 	list addresses '<10.x.x.x/32>'
@@ -145,7 +154,23 @@ config interface 'awg0'
 config amneziawg_awg0
 	option public_key '<SERVER_PUBLIC_KEY>'
 	# option preshared_key '<PRESHARED_KEY>'   # if your conf has one
-	option endpoint_host '<SERVER_HOSTNAME>'
+	#
+	# endpoint_host: STRONGLY prefer the resolved IP literal here, NOT
+	# the hostname from your .conf. Reason — at cold boot, the AWG proto
+	# handler resolves this string via glibc → /etc/resolv.conf →
+	# 127.0.0.1 → dnsmasq → https-dns-proxy → DoH. When everything is
+	# down on first ifup, that chain has no working route to anywhere
+	# (default route is supposed to come from AWG, which can't come up
+	# until it resolves...). IP literal bypasses the entire deadlock.
+	#
+	# Belt-and-suspenders: also add a /etc/hosts entry mapping your
+	# provider hostname to the IP, so any tooling that queries by name
+	# resolves it locally without DNS:
+	#   echo "<SERVER_IP>	<server-hostname>" >> /etc/hosts
+	# If the provider rotates endpoint IPs, you'll need to update both
+	# this file and /etc/hosts; in practice most AWG providers keep
+	# endpoint IPs stable for months.
+	option endpoint_host '<SERVER_IP>'
 	option endpoint_port '<SERVER_PORT>'
 	option persistent_keepalive '30'
 	option route_allowed_ips '1'
