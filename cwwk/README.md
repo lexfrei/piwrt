@@ -643,7 +643,7 @@ The script is invoked from `/etc/rc.local` on every boot (backgrounded so boot i
 
 ## Watchdogs
 
-- **`awg-watchdog`** — runs every 2 minutes from cron. Reads `awg show awg0 latest-handshakes`, checks how long ago the last handshake was. If older than 180 s (twice the keepalive interval), it bounces `awg0` with `ifdown` + `ifup`. This also serves as failover trigger when the WAN endpoint route goes stale.
+- **`awg-watchdog`** — runs every 2 minutes from cron. Reads `awg show awg0 latest-handshakes`, checks how long ago the last handshake was. If older than 180 s (6× the 30 s keepalive interval — generous, accounts for transient WAN flaps without false-positive bounces), it bounces `awg0` with `ifdown` + `ifup`. This also serves as failover trigger when the WAN endpoint route goes stale.
 
 Skips the first 90 seconds of uptime — NTP needs to bring system time into sync before the AWG handshake age can be evaluated, and netifd is still racing during early boot.
 
