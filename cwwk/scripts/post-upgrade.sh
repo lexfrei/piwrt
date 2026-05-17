@@ -125,6 +125,19 @@ log "restarting services"
 /etc/init.d/https-dns-proxy enable >/dev/null 2>&1 || true
 /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
 /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
+
+# Pause before ifup awg0 — dnsmasq restart above briefly tears down the
+# DNS chain (dnsmasq → https-dns-proxy → DoH). The AmneziaWG proto handler
+# resolves endpoint_host via that chain; if it queries during the restart
+# window, glibc gets connection refused / timeout, the handler enters
+# its retry-with-backoff loop (1s, 1.2s, 1.44s, ..., ~12 attempts) and
+# eventually gives up with the interface in DOWN state. 3 seconds is
+# enough for dnsmasq to bind 127.0.0.1:53 and accept queries again.
+#
+# Even with this guard, endpoint_host should be an IP literal in
+# /etc/config/network for the most robust boot — see the chicken-and-egg
+# note in README. The sleep is belt-and-suspenders.
+sleep 3
 ifup awg0 >/dev/null 2>&1 || true
 
 log "done"
