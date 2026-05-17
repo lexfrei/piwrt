@@ -109,6 +109,72 @@ TjMAX on N305 is 105 °C, throttling begins ~95-100 °C. With fan on, ~38 °C he
 
 Recommendation for this build: configure BIOS Smart Fan PWM curve first, then physical disconnect if even the curve's idle setting is audible. The thermal numbers above support either path. Re-evaluate if planning sustained 10G symmetric workloads.
 
+### BIOS updates — where to get them
+
+CWWK does not push BIOS updates automatically. To check whether your board has a newer BIOS, you navigate their download portal manually.
+
+**Board identification.** This 2× SFP+ + 2× 2.5GbE N305 SKU is CWWK's internal **`CW-AL-(2L+SFP_4L)`** board, also marketed in Chinese as **「双光双电」** ("dual optical dual electrical"), part of the **AlderLake-N OMW SFP series**. DO NOT confuse with the visually-similar **`CW-WTM-ADLN-NET-4L-PCIe`** which is the 4× RJ45 LAN variant (no SFP+) and has different PCB revisions (V1.0A / V1.0B / V1.0C) with separate BIOS distribution.
+
+**Current BIOS as shipped (verified on this build):**
+
+```text
+Vendor:     American Megatrends International, LLC.
+Version:    5.27
+Date:       06/14/2024
+```
+
+Read on the running system from `/sys/class/dmi/id/bios_version` and `/sys/class/dmi/id/bios_date`, or via `dmidecode --type bios`. Board / system DMI fields show `Default string` on this SKU — CWWK doesn't populate them — so DMI-based ID is only useful for the BIOS section.
+
+**Download portal.** CWWK runs an AList-based file browser at **<https://drive.x86pi.com>** (`/BIOS` subtree). The HTTPS certificate has been expired for a long time; use `--insecure` with `curl` or accept the warning in the browser. Path for this board's BIOS:
+
+```text
+/BIOS/1.miniPC-BIOS/Alder_Lake-N(N50_N95_N97_N100_N200_i3-N305)/
+  7.第12代AlderLake-N-OMW-N100-N305-SFP系列/
+    AlderLake-N-OMW-N100-N305-SFP系列_<YYYY-MM-DD>更新/
+      CW-AL-(2L+SFP_4L)-(双光双电N100-I3-N305出厂默认原始版本)<YYYY.MM.DD>_NoLogo.iso
+```
+
+The "更新" Chinese-suffixed dated subfolders are release pockets — pick the latest. Latest known at time of writing: **2024-09-26**, ISO ~19 MB, `NoLogo` variant (no splash screen, otherwise identical to logo variants of other boards).
+
+**Programmatic listing** (when navigating the JS-rendered AList UI is annoying):
+
+```sh
+curl --silent --insecure --max-time 15 \
+    --request POST 'https://drive.x86pi.com/api/fs/list' \
+    --header 'Content-Type: application/json' \
+    --data '{"path":"/BIOS/1.miniPC-BIOS/Alder_Lake-N(N50_N95_N97_N100_N200_i3-N305)/7.第12代AlderLake-N-OMW-N100-N305-SFP系列","page":1,"per_page":300}' \
+    | python3 -c 'import json,sys; d=json.load(sys.stdin)["data"]["content"]; [print(c["name"], c.get("modified","")[:10]) for c in d]'
+
+# Get raw download URL for a specific file (signed, valid for 4 hours):
+curl --silent --insecure \
+    --request POST 'https://drive.x86pi.com/api/fs/get' \
+    --header 'Content-Type: application/json' \
+    --data '{"path":"/BIOS/.../<filename>.iso"}' \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["raw_url"])'
+```
+
+The raw URL points at an Aliyun OSS bucket (`cwwp.oss-cn-heyuan.aliyuncs.com`) with a 4-hour-expiry signed query string.
+
+**Flashing.** CWWK distributes BIOS as a bootable ISO. Procedure (not yet exercised on this build — documented from CWWK customer-support guidance):
+
+1. `dd if=BIOS.iso of=/dev/sdX bs=4M conv=fsync` to a USB stick (sacrificial — the ISO is bootable and overwrites the stick).
+2. Boot the CWWK with the USB plugged in. Hit BIOS menu, select USB as boot device.
+3. ISO contains an `efiflash` autorun script that prompts for confirmation, then writes the new BIOS to flash. ~30-60 s, then auto-reboots.
+4. After reboot, check `/sys/class/dmi/id/bios_date` to confirm the new date.
+
+**Risks.** Power loss during flash bricks the board (no dual-BIOS / fallback ROM on this design AFAIK). Only flash when:
+- A specific need exists (new fan-curve options, security fix, kernel-side feature like 82599ES quirks, etc.)
+- The box is on a stable power source (UPS preferred).
+- You have a recovery plan (CWWK customer support can sometimes RMA bricks; community knows USB-prog SPI flash recovery for AMI Aptio chips).
+
+For the current single-pain-point of fan noise — if BIOS Smart Fan is already adequately tunable on the installed 2024-06-14 firmware, no BIOS update needed. Re-evaluate if a specific limitation surfaces.
+
+**Other resources around CWWK:**
+
+- Documentation: <https://doc.x86pi.cn> (Chinese)
+- Community forum: <https://bbs.x86pi.com> — Chinese mini-PC enthusiasts, active CWWK section
+- Top-level download portal: <https://www.changwang.com/downloads> (English-friendly dropdown, points at the same AList backend)
+
 ## Prerequisites
 
 - A CWWK N305 4-port appliance (or any of the rebrand SKUs sold under Topton / Kingnovy / etc. with identical board layout — Intel 82599ES SFP+ + i226-V 2.5GbE pairing).
