@@ -18,7 +18,29 @@
 [ "$(cut -d. -f1 /proc/uptime)" -lt 90 ] && exit 0
 
 last=$(awg show awg0 latest-handshakes 2>/dev/null | awk '{print $2}')
-[ -z "$last" ] && last=0
+
+case "$last" in
+	''|0)
+		# No handshake recorded yet. Distinguish "tunnel was just
+		# (re)configured and hasn't heard back yet" from "configured
+		# long enough ago that nothing is ever going to answer". The
+		# hotplug script in /etc/hotplug.d/iface/91-awg-dns-bootstrap
+		# waits 15 s for the first handshake on ifup; if awg0 has
+		# been up significantly longer than that and still no peer
+		# response, the outer UDP path is broken — bounce to retry.
+		awg_uptime=$(ifstatus awg0 2>/dev/null | jsonfilter -e '@.uptime')
+		case "$awg_uptime" in
+			''|0) exit 0 ;;
+		esac
+		[ "$awg_uptime" -lt 30 ] && exit 0
+		logger -t awg-watchdog "no handshake after ${awg_uptime}s uptime, restarting awg0"
+		ifdown awg0
+		sleep 2
+		ifup awg0
+		exit 0
+		;;
+esac
+
 now=$(date +%s)
 age=$((now - last))
 
