@@ -126,6 +126,21 @@ if [ ! -s /etc/dnsmasq.d/allow-domains.conf ] && [ -x /usr/bin/update-bypass-lis
 	/usr/bin/update-bypass-list >/dev/null 2>&1 || log "update-bypass-list failed (cron will retry weekly)"
 fi
 
+# Initial DNS upstream — the hotplug script in
+# /etc/hotplug.d/iface/91-awg-dns-bootstrap owns the file from the first
+# netifd event onward, but dnsmasq must have an upstream entry for its
+# first start. sysupgrade.conf preserves /etc/dnsmasq.d/, so this branch
+# is taken only on a fresh install where the user forgot to copy the
+# repo's configs/dnsmasq.d/00-upstream.conf manually.
+if [ ! -s /etc/dnsmasq.d/00-upstream.conf ]; then
+	log "writing initial /etc/dnsmasq.d/00-upstream.conf"
+	cat > /etc/dnsmasq.d/00-upstream.conf <<'EOF'
+# Initial state — overwritten on the first netifd ifup/ifdown event by
+# /etc/hotplug.d/iface/91-awg-dns-bootstrap.
+server=127.0.0.1#5053
+EOF
+fi
+
 log "restarting services"
 /etc/init.d/network reload >/dev/null 2>&1 || true
 /etc/init.d/firewall reload >/dev/null 2>&1 || true
