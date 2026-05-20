@@ -32,12 +32,28 @@
 # through awg0 like everything else (since awg0 is the default route).
 # That keeps the DoH stream out of the operator's view.
 #
-# `update_dnsmasq_config '0'` — we don't want this package modifying
-# /etc/config/dhcp on its own. The dnsmasq upstream is owned by the
-# hotplug script via /etc/dnsmasq.d/00-upstream.conf.
+# `dnsmasq_config_update '-'` — documented sentinel value that disables
+# the package's automatic injection of `list server '127.0.0.1#5053'`
+# into /etc/config/dhcp on every start/stop. We need this disabled
+# because the dnsmasq upstream is owned by the hotplug script via
+# /etc/dnsmasq.d/00-upstream.conf — letting the package also write to
+# /etc/config/dhcp produces a two-source-of-truth situation where
+# pre-tunnel queries get round-robined between DoH (broken) and the
+# carrier DNS (working), making bootstrap unreliable.
+#
+# Reference: docs.openwrt.melmac.ca/https-dns-proxy/ — "can be set to '-'
+# to not change dnsmasq server settings on start/stop". The init script
+# tests for '*' (inject everywhere) and is_alnum (inject named instance);
+# '-' fails both, so the inject branches are skipped silently.
+#
+# Common mistake: the option name in older docs / luci-app variants was
+# `update_dnsmasq_config`, but the live init script reads
+# `dnsmasq_config_update` (note the word order). Using the wrong name
+# means the option is ignored and the default '*' applies. Setting both
+# is harmless; only the second-word-order key is honored.
 
 config main 'config'
-	option update_dnsmasq_config '0'
+	option dnsmasq_config_update '-'
 	option force_dns '0'
 	option canary_domains_icloud '1'
 	option canary_domains_mozilla '1'
