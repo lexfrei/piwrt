@@ -253,10 +253,17 @@ cp configs/nftables/60-mobile-ttl.nft    /etc/nftables.d/
 # "RU operator CGNAT blocks plain DNS" section under Mobile-specific
 # quirks for the deadlock the hostname form creates on cellular WAN.
 
-# Hotplug script (ECMP-aware split-VPN router)
+# Hotplug scripts: split-VPN ECMP router + DNS bootstrap manager
 mkdir -p /etc/hotplug.d/iface
-cp configs/hotplug.d/iface/90-split-vpn /etc/hotplug.d/iface/
+cp configs/hotplug.d/iface/90-split-vpn          /etc/hotplug.d/iface/
+cp configs/hotplug.d/iface/91-awg-dns-bootstrap  /etc/hotplug.d/iface/
 chmod +x /etc/hotplug.d/iface/90-split-vpn
+chmod +x /etc/hotplug.d/iface/91-awg-dns-bootstrap
+
+# Initial dnsmasq upstream state (the hotplug script owns this file
+# from the first netifd event onward — see "DNS state machine" section).
+mkdir -p /etc/dnsmasq.d
+cp configs/dnsmasq.d/00-upstream.conf /etc/dnsmasq.d/
 ```
 
 ### 8. Patch dnsmasq init to run as root
@@ -437,11 +444,11 @@ The ICMP echo request leaving Hopper carries `ttl=65` because of the `mangle_pos
 - The modem decrements (otherwise the operator would see 65, also tethering-suspect),
 - The reply path is alive (so the rule isn't accidentally dropping anything).
 
-### RU operator CGNAT blocks plain DNS — DoH bootstrap subtlety
+### RU operator CGNAT blocks DNS — DoH bootstrap subtlety
 
-Russian cellular operators (MegaFon confirmed, others likely) **block outbound plain UDP/53 from CGNAT clients** to public DNS resolvers (1.1.1.1, 1.0.0.1, 8.8.8.8). HTTPS/443 to the same IPs is not blocked.
+Russian cellular operators (MegaFon confirmed, others likely) **block outbound plain UDP/53 from CGNAT clients** to public DNS resolvers (1.1.1.1, 1.0.0.1, 8.8.8.8). Some operators also DPI-block **HTTPS/443 to those same DoH IPs** (observed empirically — `curl` to the DoH endpoint times out with no TCP RST). Which kind of block is in effect is operator-dependent and not always stable over time, so the bootstrap has to handle both.
 
-This breaks the default `https-dns-proxy` bootstrap path when the only working WAN is cellular:
+The default `https-dns-proxy` bootstrap path with `resolver_url = https://cloudflare-dns.com/dns-query` fails on the plain-UDP/53 form:
 
 1. proxy starts with `resolver_url = https://cloudflare-dns.com/dns-query`,
 2. c-ares (the resolver library) tries to resolve `cloudflare-dns.com` via the bootstrap servers (`1.1.1.1:53` / `1.0.0.1:53` plain UDP),
@@ -449,11 +456,38 @@ This breaks the default `https-dns-proxy` bootstrap path when the only working W
 4. proxy enters a "bootstrapping not complete" state: it accepts incoming DNS queries on 127.0.0.1:5053 but discards them with `Query received before bootstrapping is completed`,
 5. dnsmasq's upstream silently times out, the router has no DNS for anything (including AWG endpoint resolution → tunnel won't come up).
 
-**Fix in [`configs/https-dns-proxy`](configs/https-dns-proxy)**: set `resolver_url` to an IP literal `https://1.1.1.1/dns-query`. No bootstrap resolve needed. Cloudflare's TLS cert covers `1.1.1.1` as a SAN, so cert validation passes. HTTPS/443 is not blocked, so the connection succeeds.
+**First half-fix in [`configs/https-dns-proxy`](configs/https-dns-proxy)**: set `resolver_url` to an IP literal `https://1.1.1.1/dns-query`. No bootstrap resolve needed. Cloudflare's TLS cert covers `1.1.1.1` as a SAN, so cert validation passes. On operators that pass /443, that's all you need.
 
-After the AWG tunnel is up, https-dns-proxy's outbound DoH traffic rides through awg0 (since awg0 is default route in main table). At that point you could switch back to the hostname-based `resolver_url` and it'd work fine. But there's no reason to — the IP-literal form is strictly more robust and survives WAN failovers transparently.
+**But /443 is not always passable**, so the IP-literal resolver alone is not sufficient. See the next section for the second half — a hotplug-driven DNS bootstrap that falls dnsmasq back to the carrier's DHCP-advertised DNS while AWG is down.
 
-This also affects `post-upgrade.sh`'s `wait_for_wan` check. If the script reaches `nslookup downloads.openwrt.org` while the operator is blocking and the tunnel hasn't come up, the check fails and the script aborts. Symptom: `/tmp/piwrt-post-upgrade.log` empty after a reboot, custom packages not re-installed. With the IP-literal resolver, the DNS chain comes up immediately at boot, `wait_for_wan` passes, and `post-upgrade.sh` proceeds normally.
+This deadlock also affected `post-upgrade.sh`'s `wait_for_wan` check: if the script reached `nslookup downloads.openwrt.org` while the operator was blocking and the tunnel hadn't come up, the check failed and the script aborted. Symptom: `/tmp/piwrt-post-upgrade.log` empty after a reboot, custom packages not re-installed. With the bootstrap manager described below, the DNS chain comes up immediately at boot (via carrier DNS), `wait_for_wan` passes, and `post-upgrade.sh` proceeds normally — even when the tunnel itself never gets a handshake.
+
+### DNS state machine — hotplug-driven bootstrap
+
+The dnsmasq upstream is owned entirely by [`configs/hotplug.d/iface/91-awg-dns-bootstrap`](configs/hotplug.d/iface/91-awg-dns-bootstrap). It writes a single file, `/etc/dnsmasq.d/00-upstream.conf`, and bounces dnsmasq when the contents change. There is no `list server` in `/etc/config/dhcp` — letting the UCI config also declare an upstream creates a two-source-of-truth state where pre-tunnel queries get round-robined between broken DoH (127.0.0.1#5053) and working carrier DNS, making the bootstrap path unreliable.
+
+State transitions triggered by netifd ifup/ifdown:
+
+| Event | Action |
+| --- | --- |
+| `awg0 ifup` | Optimistically apply bootstrap mode (carrier DNS), then poll `awg show awg0 latest-handshakes` for up to 15 s. On success, upgrade to DoH. On timeout, stay in bootstrap and log it. |
+| `awg0 ifdown` | Apply bootstrap mode immediately. |
+| `wan/wan6/wwan ifup or ifdown` | If `awg_handshake_seen` is false (the tunnel is not actually passing traffic, regardless of netifd's "up" flag), recompute the bootstrap upstream from the latest DHCP-provided DNS. |
+
+The "wait for handshake" step is what closes the trap that netifd-only logic falls into. netifd marks an amneziawg interface up the moment `awg setconf` succeeds — well before any peer has been heard from. Without polling for the handshake, the script switches dnsmasq to DoH on a paper-up tunnel; https-dns-proxy then tries to reach Cloudflare via the dead tunnel, all DNS queries time out, and the router has no resolver until something kicks awg0 down.
+
+The "optimistically apply bootstrap first" step keeps DNS working continuously across the 15-second poll. If we sat in DoH from a previous tunnel-up cycle, switching back to bootstrap at the start of the new ifup avoids a dead-DNS window during the wait.
+
+**Pairing with awg-watchdog**: [`scripts/awg-watchdog`](scripts/awg-watchdog) runs every 2 minutes from cron. It distinguishes two no-handshake cases:
+
+- `awg0` uptime &lt; 30 s with no handshake: tunnel was just (re)configured — exit, let it bake.
+- `awg0` uptime &ge; 30 s with no handshake: tunnel is stuck — bounce.
+
+(The 30 s threshold is intentionally larger than the hotplug script's `HANDSHAKE_TIMEOUT=15` so the two don't race.) When a stale handshake is observed (`age > 180 s`), the watchdog also bounces. The bounce triggers `ifdown awg0` &rarr; bootstrap mode &rarr; `ifup awg0` &rarr; either upgrade to DoH (handshake succeeds) or stay in bootstrap and try again in 2 minutes.
+
+**Privacy budget**: in bootstrap mode the carrier sees the router's own DNS queries, most importantly the AWG endpoint A/AAAA lookup. LAN clients are unaffected because `lan -> awg` forwarding is the only WAN-bound chain in the firewall and AWG is down, so they have no path out at all. Once the tunnel comes up the switch back to DoH closes the leak. Steady state is DoH-via-tunnel-only; the bootstrap window is bounded by endpoint-resolve + AWG handshake (typically 1&ndash;3 s) or one full `HANDSHAKE_TIMEOUT` worth of bootstrap when the endpoint is unreachable.
+
+**Disabling the https-dns-proxy package's auto-injection**: the package's init script tries to inject `list server '127.0.0.1#5053'` into `/etc/config/dhcp` on every start. To suppress that and keep the hotplug script as the sole owner of the dnsmasq upstream, set `option dnsmasq_config_update '-'` in `/etc/config/https-dns-proxy`. The dash is the documented sentinel ([docs.openwrt.melmac.ca](https://docs.openwrt.melmac.ca/https-dns-proxy/)) — the init script's two inject branches (`'*'` and `is_alnum`) both fail on `'-'`, so injection is skipped silently. Watch the option name: it is `dnsmasq_config_update` (verb at the end), not `update_dnsmasq_config` (verb at the start). The latter appears in older docs but is ignored by current init scripts, so setting it has no effect.
 
 ### What firmware does the modem run
 
