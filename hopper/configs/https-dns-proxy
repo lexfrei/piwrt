@@ -13,16 +13,28 @@
 #
 # Using `https://1.1.1.1/dns-query` skips the bootstrap-resolve step
 # entirely. Cloudflare's cert covers `1.1.1.1` as a SAN, so cert
-# validation works. HTTPS/443 to 1.1.1.1 is not blocked by RU
-# operators — only plain DNS/53 is.
+# validation works.
+#
+# But: this only helps when the operator passes HTTPS/443 to public
+# DoH IPs unmodified. Some RU mobile operators DPI-block /443 to
+# 1.1.1.1 / 9.9.9.9 outright (observed empirically — `curl` to the
+# DoH endpoint times out with no TCP RST). On those networks the
+# IP-literal trick is not sufficient by itself, and the proxy stays
+# stuck in "bootstrap incomplete" state pre-tunnel. The hotplug DNS
+# bootstrap script — configs/hotplug.d/iface/91-awg-dns-bootstrap —
+# is what actually closes the loop: it falls dnsmasq back to the
+# carrier's DHCP-advertised DNS while AWG is down, then snaps the
+# upstream back to DoH once the tunnel comes up. The IP-literal
+# resolver_url is still the right config either way (DoH-passing
+# operators benefit immediately, DoH-blocking ones are no worse off).
 #
 # After the tunnel is up, the proxy's outbound TLS to Cloudflare rides
 # through awg0 like everything else (since awg0 is the default route).
 # That keeps the DoH stream out of the operator's view.
 #
 # `update_dnsmasq_config '0'` — we don't want this package modifying
-# /etc/config/dhcp on its own. The dnsmasq upstream is statically
-# declared (see configs/dhcp -> `list server '127.0.0.1#5053'`).
+# /etc/config/dhcp on its own. The dnsmasq upstream is owned by the
+# hotplug script via /etc/dnsmasq.d/00-upstream.conf.
 
 config main 'config'
 	option update_dnsmasq_config '0'

@@ -1,21 +1,26 @@
-# /etc/config/dhcp — dnsmasq-full with nftset for split-VPN and DoH
-# upstream pinned to https-dns-proxy on 127.0.0.1:5053.
+# /etc/config/dhcp — dnsmasq-full with nftset for split-VPN. Upstream
+# DNS is NOT declared here; it is owned by the hotplug-driven state
+# machine in /etc/hotplug.d/iface/91-awg-dns-bootstrap, which writes
+# /etc/dnsmasq.d/00-upstream.conf based on whether the AWG tunnel is up.
 #
 # Why dnsmasq-full: base dnsmasq is built without nftset support, so the
 # split-VPN bypass nftset=/domain/... directives in /etc/dnsmasq.d/
 # silently no-op. dnsmasq-full ships with --with-nftset.
 #
-# Why `list server '127.0.0.1#5053'` here even when https-dns-proxy
-# normally injects it: without an upstream the very first boot has a
-# chicken-and-egg situation — AWG cannot resolve its endpoint hostname
-# because dnsmasq has nothing to forward to. Having a static line here
-# means DNS works the moment https-dns-proxy comes up, even if the UCI
-# injection hook hasn't run yet.
+# Why no `list server` here:
+#   - When awg0 is up, the upstream must be DoH on 127.0.0.1:5053.
+#   - When awg0 is down, DoH fails (some RU operators DPI-block
+#     HTTPS/443 to public DoH; on others it works — we don't assume),
+#     and the only thing that can resolve the AWG endpoint hostname
+#     is whatever the carrier's DHCP advertises.
+# The hotplug script flips between these two states. Keeping the
+# upstream in /etc/dnsmasq.d/00-upstream.conf (a single file rewritten
+# atomically) means there is exactly one source of truth per state.
 #
 # `option noresolv '1'` blocks dnsmasq from reading /tmp/resolv.conf.d/*
-# (which would point at the upstream router's DNS) — that's the DNS-leak
-# kill switch. The only allowed upstream is whatever 127.0.0.1#5053 sends,
-# which is DoH through the tunnel.
+# directly — that's the DNS-leak kill switch. The carrier's DNS is
+# never used implicitly; it can only enter the upstream list via the
+# hotplug script during the bounded bootstrap window when AWG is down.
 #
 # DHCP option 26 announces MTU 1280 to LAN clients, matching the AWG
 # tunnel MTU. This avoids fragmentation failures (classic Nintendo Switch
@@ -44,7 +49,6 @@ config dnsmasq
 	option ednspacket_max '1232'
 	option noresolv '1'
 	option confdir '/etc/dnsmasq.d'
-	list server '127.0.0.1#5053'
 
 config dhcp 'lan'
 	option interface 'lan'
