@@ -16,11 +16,25 @@
 #
 # State machine driven by netifd ifup/ifdown events:
 #
-#   awg0 ifup   -> upstream = DoH (127.0.0.1#5053)    steady state
-#   awg0 ifdown -> upstream = first DHCP-provided DNS bootstrap mode
-#   wan/wwan up -> if awg0 is down, refresh bootstrap with newest DNS
-#   wan/wwan dn -> if awg0 is down, recompute (other uplink may still
-#                  be up — pick its DNS instead)
+#   awg0 ifup   -> wait up to HANDSHAKE_TIMEOUT seconds for an actual
+#                  AmneziaWG handshake. If it appears, switch upstream
+#                  to DoH (steady state). If not — endpoint UDP is
+#                  likely being dropped by the carrier even though
+#                  netifd reports the interface as up — keep upstream
+#                  in bootstrap mode so DNS still works.
+#   awg0 ifdown -> upstream = first DHCP-provided DNS (bootstrap mode)
+#   wan/wwan up -> if awg0 is not actually handshaking, refresh
+#                  bootstrap with the newest DHCP-provided DNS
+#   wan/wwan dn -> if awg0 is not actually handshaking, recompute
+#                  (other uplink may still be up — pick its DNS)
+#
+# Why "ifup awg0 != working tunnel": netifd marks an amneziawg interface
+# up the moment `awg setconf` succeeds, before the peer has been heard
+# from. The peer is the only thing that can confirm the outer UDP path
+# is open. Without the handshake check, switching to DoH on a paper-up
+# tunnel locks the router into a state where the only resolver
+# (127.0.0.1#5053 -> outbound TLS via awg0 -> nowhere) cannot answer
+# anything.
 #
 # Both modes write a single file /etc/dnsmasq.d/00-upstream.conf and
 # bounce dnsmasq. The corresponding `list server '127.0.0.1#5053'`
@@ -38,6 +52,7 @@
 UPSTREAM_CONF=/etc/dnsmasq.d/00-upstream.conf
 DOH_LISTENER='127.0.0.1#5053'
 LOG_TAG=dns-bootstrap
+HANDSHAKE_TIMEOUT=15   # seconds to wait for first handshake after ifup
 
 case "$INTERFACE" in
 	awg0|wan|wan6|wwan) ;;
@@ -53,6 +68,29 @@ awg_is_up() {
 	ifstatus awg0 2>/dev/null \
 		| jsonfilter -e '@.up' 2>/dev/null \
 		| grep -q '^true$'
+}
+
+# A handshake has happened (or is happening) when latest-handshakes is
+# non-zero. The kernel module sets this to a UNIX timestamp on the very
+# first valid response from the peer, and updates it on every subsequent
+# rekey. Zero means: configured but never heard back. We treat zero as
+# "tunnel not actually working yet".
+awg_handshake_seen() {
+	local last
+	last=$(awg show awg0 latest-handshakes 2>/dev/null | awk '{print $2}')
+	[ -n "$last" ] && [ "$last" != "0" ]
+}
+
+# Poll for first handshake. Returns 0 if seen within HANDSHAKE_TIMEOUT
+# seconds, 1 otherwise.
+wait_for_handshake() {
+	local i=0
+	while [ "$i" -lt "$HANDSHAKE_TIMEOUT" ]; do
+		awg_handshake_seen && return 0
+		sleep 1
+		i=$((i + 1))
+	done
+	return 1
 }
 
 # First plain-DNS server from any currently-up DHCP uplink. netifd
@@ -126,10 +164,26 @@ EOF
 
 if [ "$INTERFACE" = "awg0" ]; then
 	case "$ACTION" in
-		ifup)   apply_doh_mode ;;
-		ifdown) apply_bootstrap_mode ;;
+		ifup)
+			# Optimistically install bootstrap mode FIRST so DNS keeps
+			# working during the handshake wait. If we sat in DoH mode
+			# from a previous tunnel-up cycle and the new ifup never
+			# completes a handshake (carrier DPI'd the endpoint), DNS
+			# would otherwise be dead for the entire timeout. After
+			# the handshake actually completes, upgrade to DoH.
+			apply_bootstrap_mode
+			if wait_for_handshake; then
+				apply_doh_mode
+			else
+				logger -t "$LOG_TAG" "awg0 ifup: no handshake in ${HANDSHAKE_TIMEOUT}s, staying in bootstrap"
+			fi
+			;;
+		ifdown)
+			apply_bootstrap_mode
+			;;
 	esac
 else
-	# wan / wan6 / wwan event — only matters while the tunnel is down.
-	awg_is_up || apply_bootstrap_mode
+	# wan / wan6 / wwan event — only matters while the tunnel is
+	# not actually working (handshake-level "up", not netifd-level).
+	awg_handshake_seen || apply_bootstrap_mode
 fi
