@@ -5,24 +5,28 @@ Netcraze Hopper (NC-3811 / hardware-identical Keenetic KN-3811) running OpenWrt 
 ## Architecture
 
 ```text
-[home ethernet] ── wan  (DHCP, metric 10) ─┐
-                                            │
-[Huawei E3372 HiLink] ─ eth1 ── wwan (DHCP, metric 20) ─┤
-                                            │
-                                            ├── awg0 (AmneziaWG v2)  ── lan forward (kill switch)
-                                            │
-                                            └── table 100 (fwmark 0x100)
-                                                ECMP over up-WANs (per-flow hash)
+[home ethernet]  ── wan   (DHCP, metric 10) ─┐
+                                              │
+[USB-Ethernet #1] ── eth1 ── wwan  (DHCP, m20) ┤
+                                              │
+[USB-Ethernet #2] ── eth2 ── wwan2 (DHCP, m25) ┤
+                                              │
+                                              ├── awg0 (AmneziaWG v2)  ── lan forward (kill switch)
+                                              │
+                                              └── table 100 (fwmark 0x100)
+                                                  ECMP over up-WANs (per-flow hash)
 
 [Wi-Fi clients] ── phy0-ap0 (2.4 GHz HE20) ──┐
                 ── phy1-ap0 (5 GHz HE80)  ───┴── br-lan (lan1..lan3 + radios) ── 192.168.1.0/24
 ```
 
+USB-Ethernet uplinks are slot-symmetric: which physical device ends up at `eth1` vs `eth2` depends on USB enumeration order, not on identity. Typical population is Huawei E3372 + iPhone (or any second USB-net device); the split-VPN hotplug treats both wwan-slots interchangeably and does ECMP over whatever subset is currently up. When only one USB modem is plugged in, `wwan2` stays in `DOWN` (kernel hasn't created `eth2`) and the topology degrades to dual-WAN without config edits.
+
 Three traffic classes:
 
 - **All LAN client traffic** is forwarded through `awg0` (no `lan → wan` rule exists, only `lan → awg`). If the tunnel is down, clients lose internet entirely — that's the kill switch.
-- **Split-VPN bypass** (Russian domain list) is marked `fwmark 0x100` by an nftables prerouting hook and routed through table 100. When both wan and wwan are up, table 100 holds an ECMP multipath default and bypass traffic is hashed per-flow across both uplinks. When one is down, the single remaining nexthop is used.
-- **AWG outer UDP** (the encrypted handshake / data stream to the AWG server) is sent to a specific endpoint route installed by the netifd AWG handler. It rides whichever WAN has the lowest metric (wan when available, wwan when wan is down). Failover happens via `awg-watchdog` re-bringing up `awg0` after a stale handshake — single-path by design because WireGuard's endpoint roaming makes ECMP on the outer path unreliable.
+- **Split-VPN bypass** (Russian domain list) is marked `fwmark 0x100` by an nftables prerouting hook and routed through table 100. When multiple WANs are up, table 100 holds an ECMP multipath default and bypass traffic is hashed per-flow across all up-WANs. When only one is up, the single remaining nexthop is used. Triple-WAN works the same way — `apply_ecmp_routes` in `90-split-vpn` is N-way, not 2-way-hardcoded.
+- **AWG outer UDP** (the encrypted handshake / data stream to the AWG server) is sent to a specific endpoint route installed by the netifd AWG handler. It rides whichever WAN has the lowest metric (wan → wwan → wwan2). Failover happens via `awg-watchdog` re-bringing up `awg0` after a stale handshake — single-path by design because WireGuard's endpoint roaming makes ECMP on the outer path unreliable.
 
 ## Scope, explicitly
 

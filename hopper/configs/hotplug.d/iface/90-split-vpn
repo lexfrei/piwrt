@@ -18,7 +18,7 @@
 # ip-full, the single-nexthop branch still works, but the dual branch
 # leaves table 100 empty. post-upgrade.sh installs ip-full unconditionally.
 
-WAN_IFACES='wan wwan'
+WAN_IFACES='wan wwan wwan2'
 TABLE_ID=100
 FWMARK='0x100'
 RULE_PREF=100

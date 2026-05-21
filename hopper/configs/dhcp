@@ -71,6 +71,10 @@ config dhcp 'wwan'
 	option interface 'wwan'
 	option ignore '1'
 
+config dhcp 'wwan2'
+	option interface 'wwan2'
+	option ignore '1'
+
 config odhcpd 'odhcpd'
 	option maindhcp '0'
 	option leasefile '/tmp/hosts/odhcpd'

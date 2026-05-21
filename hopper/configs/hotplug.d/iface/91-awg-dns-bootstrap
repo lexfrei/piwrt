@@ -23,10 +23,10 @@
 #                  netifd reports the interface as up — keep upstream
 #                  in bootstrap mode so DNS still works.
 #   awg0 ifdown -> upstream = first DHCP-provided DNS (bootstrap mode)
-#   wan/wwan up -> if awg0 is not actually handshaking, refresh
-#                  bootstrap with the newest DHCP-provided DNS
-#   wan/wwan dn -> if awg0 is not actually handshaking, recompute
-#                  (other uplink may still be up — pick its DNS)
+#   wan/wwan/wwan2 up -> if awg0 is not actually handshaking,
+#                        refresh bootstrap with newest DHCP-provided DNS
+#   wan/wwan/wwan2 dn -> if awg0 is not actually handshaking, recompute
+#                        (other uplink may still be up — pick its DNS)
 #
 # Why "ifup awg0 != working tunnel": netifd marks an amneziawg interface
 # up the moment `awg setconf` succeeds, before the peer has been heard
@@ -55,7 +55,7 @@ LOG_TAG=dns-bootstrap
 HANDSHAKE_TIMEOUT=15   # seconds to wait for first handshake after ifup
 
 case "$INTERFACE" in
-	awg0|wan|wan6|wwan) ;;
+	awg0|wan|wan6|wwan|wwan2) ;;
 	*) exit 0 ;;
 esac
 
@@ -183,7 +183,7 @@ if [ "$INTERFACE" = "awg0" ]; then
 			;;
 	esac
 else
-	# wan / wan6 / wwan event — only matters while the tunnel is
-	# not actually working (handshake-level "up", not netifd-level).
+	# wan / wan6 / wwan / wwan2 event — only matters while the tunnel
+	# is not actually working (handshake-level "up", not netifd-level).
 	awg_handshake_seen || apply_bootstrap_mode
 fi

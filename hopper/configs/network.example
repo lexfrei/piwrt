@@ -6,8 +6,19 @@
 #   - lan      192.168.1.0/24 on br-lan (lan1+lan2+lan3 switch ports + radio AP)
 #   - wan      ethernet uplink (DHCP, metric 10)
 #   - wan6     ethernet v6 (DHCPv6, metric 10)
-#   - wwan     USB modem (Huawei E3372 HiLink RNDIS on eth1, DHCP, metric 20)
+#   - wwan     USB-Eth #1 on eth1 (DHCP, metric 20) — first-enumerated USB modem
+#   - wwan2    USB-Eth #2 on eth2 (DHCP, metric 25) — second-enumerated USB modem
 #   - awg0     AmneziaWG v2 tunnel (default route, kill switch)
+#
+# The wwan / wwan2 split is for triple-WAN — typically one is a Huawei
+# E3372 HiLink RNDIS and the other is iPhone USB tethering via ipheth.
+# Which physical device ends up at eth1 vs eth2 is non-deterministic
+# (depends on USB enumeration order). We don't pin by MAC because the
+# iPhone randomizes its ipheth MAC per pairing. Both slots are treated
+# symmetrically by the split-VPN hotplug — ECMP across whatever is up.
+# When only one USB modem is plugged in, wwan2 stays in DOWN state
+# (no eth2 device exists) and the dual-WAN topology degrades gracefully
+# back to wan + wwan, no config change needed.
 #
 # AWG obfuscation params use the awg_ prefix on the interface section
 # (awg_jc, awg_jmin, awg_jmax, awg_s1..awg_s4, awg_h1..awg_h4, optional
@@ -52,12 +63,22 @@ config interface 'wan6'
 	option proto 'dhcpv6'
 	option metric '10'
 
-# Huawei E3372 HiLink RNDIS — comes up as eth1 after usb-modeswitch swaps
-# the modem out of CD-ROM mode (PID 12d1:1f01 -> 12d1:14db).
+# First USB-Ethernet uplink — whichever device enumerates first ends up
+# as eth1. Typically the Huawei E3372 HiLink (RNDIS, PID 12d1:14db after
+# usb-modeswitch swaps it out of CD-ROM mode 12d1:1f01) but iPhone
+# tethering via ipheth also lands here if it's plugged in first.
 config interface 'wwan'
 	option device 'eth1'
 	option proto 'dhcp'
 	option metric '20'
+	option defaultroute '1'
+
+# Second USB-Ethernet uplink — same DHCP-as-client logic, higher metric.
+# Stays DOWN when no second USB-net device is present.
+config interface 'wwan2'
+	option device 'eth2'
+	option proto 'dhcp'
+	option metric '25'
 	option defaultroute '1'
 
 config interface 'awg0'
