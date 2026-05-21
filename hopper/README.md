@@ -307,6 +307,15 @@ for s in awg-watchdog wifi-watchdog update-bypass-list.sh etc-autocommit; do
     chmod +x /usr/bin/${s%.sh}
 done
 
+# SSH host-key guard — init script that pins the dropbear host keys so
+# the SSH identity survives a UBIFS-recovery-induced regeneration (see
+# "SSH host-key stability" below). enable creates the S08 rc.d symlink
+# so it runs before dropbear (S19).
+cp scripts/ssh-hostkey-guard /etc/init.d/ssh-hostkey-guard
+chmod +x /etc/init.d/ssh-hostkey-guard
+/etc/init.d/ssh-hostkey-guard enable
+/etc/init.d/ssh-hostkey-guard boot   # seed the backup from current keys
+
 # rc.local hook — calls post-upgrade.sh on every boot (idempotent).
 # Insert before the final `exit 0`. See configs/rc.local.append.
 $EDITOR /etc/rc.local
@@ -393,6 +402,14 @@ uci commit dropbear
 ```
 
 After this the router has no web UI and no password fallback. SSH key auth is the only way in. If you lose your key, the path to recovery is TFTP-flash (step 1) — losing all state.
+
+### SSH host-key stability
+
+This board stores everything writable on a UBIFS overlay. An unclean power-off (yanking the barrel jack — the normal way this router gets "rebooted" at a remote site) triggers a UBIFS journal recovery on the next boot, visible in `dmesg` as `UBIFS recovery needed` / `recovery completed`. On at least one occasion that recovery left the dropbear ed25519 host key missing, dropbear regenerated a fresh one at its `S19` start, and the router's SSH identity silently changed — every client then refuses to connect with `REMOTE HOST IDENTIFICATION HAS CHANGED` until the stale `known_hosts` entry is cleared.
+
+`scripts/ssh-hostkey-guard` (installed as `/etc/init.d/ssh-hostkey-guard`, `START=08`, so it runs before dropbear's `S19`) pins the identity. It keeps a backup of the host keys in `/etc/dropbear/.hostkey-backup` (committed to flash long before any power-cut, so durable) and on every boot either restores the live keys from that backup if they went missing or changed, or — on first run — seeds the backup from the current keys. dropbear then always starts with the same key, so the fingerprint never changes across power-cuts or firmware upgrades.
+
+The backup directory and the init script are both in `sysupgrade.conf`, and `post-upgrade.sh` re-enables the `S08` symlink after a firmware upgrade. To intentionally rotate the host key: `rm -rf /etc/dropbear/.hostkey-backup`, restart dropbear to regenerate, then reboot once to re-seed.
 
 ## Dual-WAN architecture
 

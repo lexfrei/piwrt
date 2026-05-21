@@ -1,0 +1,49 @@
+#!/bin/sh /etc/rc.common
+# /etc/init.d/ssh-hostkey-guard — pin the dropbear SSH host keys so the
+# router's SSH identity survives a UBIFS recovery / dropbear regeneration.
+#
+# Why: on this hardware an unclean power-off (yanking the barrel jack)
+# triggers a UBIFS journal recovery on the next boot — "UBIFS recovery
+# needed" / "recovery completed" in dmesg. On at least one occasion that
+# recovery left the dropbear ed25519 host key missing or rolled back to
+# a stale state, dropbear regenerated a fresh key at its S19 start, and
+# the router's SSH identity silently changed. Every client then refuses
+# to connect with REMOTE HOST IDENTIFICATION HAS CHANGED until the old
+# entry is cleared.
+#
+# This guard runs at START=08 — before dropbear (S19). It keeps a backup
+# of the host keys in /etc/dropbear/.hostkey-backup (committed to flash
+# long before any power-cut, so durable) and:
+#   - if a backup exists, forces the live keys to match it, restoring the
+#     pinned identity whenever dropbear regenerated or UBIFS lost them;
+#   - if there is no backup yet, seeds it from the current live keys.
+#
+# First-ever boot on fresh firmware: live keys don't exist at S08 (dropbear
+# hasn't run), so nothing is seeded; dropbear generates at S19; the NEXT
+# boot seeds the backup. Pinned from the second boot onward.
+#
+# To intentionally rotate the key: rm -rf /etc/dropbear/.hostkey-backup,
+# restart dropbear to regenerate, then reboot once to re-seed.
+
+START=08
+
+BACKUP=/etc/dropbear/.hostkey-backup
+LIVE=/etc/dropbear
+KEYS="dropbear_ed25519_host_key dropbear_rsa_host_key"
+
+boot() {
+	mkdir -p "$BACKUP"
+	for k in $KEYS; do
+		if [ -s "$BACKUP/$k" ]; then
+			if ! cmp -s "$BACKUP/$k" "$LIVE/$k" 2>/dev/null; then
+				cp "$BACKUP/$k" "$LIVE/$k"
+				chmod 600 "$LIVE/$k"
+				logger -t ssh-hostkey-guard "restored $k from backup (live missing or changed)"
+			fi
+		elif [ -s "$LIVE/$k" ]; then
+			cp "$LIVE/$k" "$BACKUP/$k"
+			chmod 600 "$BACKUP/$k"
+			logger -t ssh-hostkey-guard "seeded backup of $k"
+		fi
+	done
+}

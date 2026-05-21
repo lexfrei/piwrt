@@ -153,6 +153,14 @@ server=127.0.0.1#5053
 EOF
 fi
 
+# SSH host-key guard — the init script file is preserved by sysupgrade.conf
+# but its S08 rc.d symlink is not, so re-enable it here. enable is a no-op
+# if the symlink already exists.
+if [ -x /etc/init.d/ssh-hostkey-guard ]; then
+	log "ensuring ssh-hostkey-guard enabled"
+	/etc/init.d/ssh-hostkey-guard enable >/dev/null 2>&1 || true
+fi
+
 log "restarting services"
 /etc/init.d/network reload >/dev/null 2>&1 || true
 /etc/init.d/firewall reload >/dev/null 2>&1 || true
