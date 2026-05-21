@@ -61,6 +61,18 @@ apk add usb-modeswitch \
 	kmod-usb-net-cdc-ncm \
 	kmod-usb-serial-option >/dev/null 2>&1 || true
 
+# iPhone USB tethering — kmod-usb-net-ipheth provides the kernel-side
+# USB Ethernet driver for Apple's proprietary tethering protocol;
+# usbmuxd is the userspace pairing daemon that handles the
+# "Trust This Computer?" handshake. Without both, plugging an iPhone
+# into the USB port enumerates the device on the bus (lsusb sees
+# 05ac:12a8) but no eth interface materializes. With both present,
+# the iPhone comes up as eth1 / eth2 (depending on enumeration order)
+# in the 172.20.10.0/28 subnet and is picked up automatically by
+# whichever wwan UCI interface points at that eth name.
+log "ensuring iPhone tethering packages"
+apk add kmod-usb-net-ipheth usbmuxd >/dev/null 2>&1 || true
+
 # ip-full — BusyBox ip applet has no multipath support, so the
 # split-VPN hotplug ECMP route silently fails on default install.
 log "ensuring ip-full (multipath route support)"
