@@ -56,10 +56,12 @@ config dhcp 'lan'
 	option limit '150'
 	option leasetime '12h'
 	option dhcpv4 'server'
-	option dhcpv6 'server'
-	option ra 'server'
-	list ra_flags 'managed-config'
-	list ra_flags 'other-config'
+	# IPv6 disabled router-wide (see configs/network.example): no RA, no
+	# DHCPv6. The AWG provider doesn't route v6, so advertising it would
+	# only blackhole clients and make odhcpd log "no public prefix" every
+	# few minutes. dhcpv6/ra 'disabled' stops both.
+	option dhcpv6 'disabled'
+	option ra 'disabled'
 	# MTU announcement to clients (matches AWG tunnel MTU)
 	list dhcp_option '26,1280'
 

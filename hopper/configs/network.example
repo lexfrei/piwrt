@@ -36,9 +36,6 @@ config interface 'loopback'
 	option ipaddr '127.0.0.1'
 	option netmask '255.0.0.0'
 
-config globals 'globals'
-	option ula_prefix 'fd00:abcd:1234::/48'
-
 config device
 	option name 'br-lan'
 	option type 'bridge'
@@ -51,16 +48,19 @@ config interface 'lan'
 	option proto 'static'
 	option ipaddr '192.168.1.1'
 	option netmask '255.255.255.0'
-	option ip6assign '60'
+
+# IPv6 is disabled end-to-end on this router. The AWG provider hands out
+# only a /128 on the tunnel and does NOT route IPv6, so a LAN client that
+# brought up v6 would blackhole every v6 destination through awg0 and pay
+# a happy-eyeballs fallback penalty on every new connection. There is also
+# no v6 prefix to delegate, so odhcpd would spam "no public prefix, RA
+# lifetime 0" warnings. Rather than run a half-broken v6 stack we remove
+# it entirely: no ula_prefix, no ip6assign, no wan6, no v6 on awg0, no
+# ::/0 in allowed_ips. See configs/dhcp for the matching ra/dhcpv6 off.
 
 config interface 'wan'
 	option device 'wan'
 	option proto 'dhcp'
-	option metric '10'
-
-config interface 'wan6'
-	option device 'wan'
-	option proto 'dhcpv6'
 	option metric '10'
 
 # First USB-Ethernet uplink — whichever device enumerates first ends up
@@ -86,7 +86,7 @@ config interface 'awg0'
 	option private_key '<CLIENT_PRIVATE_KEY>'
 	option mtu '1280'
 	list addresses '<10.x.x.x/32>'
-	list addresses '<IPV6_ADDRESS/128>'
+	# No IPv6 address — v6 is disabled router-wide (see lan section above).
 	# AWG v2 obfuscation parameters — copy from your [Interface] section.
 	# Values that span ranges (e.g. H1 '168781656-175897653') are passed
 	# as-is, the proto handler forwards them to `awg setconf` literally.
@@ -116,4 +116,4 @@ config amneziawg_awg0
 	option persistent_keepalive '30'
 	option route_allowed_ips '1'
 	list allowed_ips '0.0.0.0/0'
-	list allowed_ips '::/0'
+	# No '::/0' — v6 disabled router-wide; routing it would blackhole.
